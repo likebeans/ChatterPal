@@ -30,7 +30,7 @@ class TestChatTabInputModeInteractions:
         self.mock_chat_service.clear_context.return_value = None
         
         # 使用临时目录创建偏好管理
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
+        with patch('chatterpal.web.components.chat_tab.get_preferences_manager') as mock_get_prefs:
             self.preferences = UserPreferences(config_dir=self.temp_dir)
             mock_get_prefs.return_value = self.preferences
             
@@ -48,11 +48,28 @@ class TestChatTabInputModeInteractions:
         self.preferences.set_input_mode("voice")
         
         # 重新创建 ChatTab 以测试初始化
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
+        with patch('chatterpal.web.components.chat_tab.get_preferences_manager') as mock_get_prefs:
             mock_get_prefs.return_value = self.preferences
             chat_tab = ChatTab(self.mock_chat_service)
             
-            # 验证初始模式设置
+            # Verify the initial widgets and hidden state use the saved mode.
+            assert chat_tab.preferences is self.preferences
+            with gr.Blocks(analytics_enabled=False) as blocks:
+                chat_tab.create_interface()
+            audio_input = next(
+                component for component in blocks.blocks.values()
+                if isinstance(component, gr.Audio) and component.label == "🎤 语音输入"
+            )
+            text_input = next(
+                component for component in blocks.blocks.values()
+                if isinstance(component, gr.Textbox) and component.label == "💬 文本输入"
+            )
+            assert audio_input.visible is True
+            assert text_input.visible is False
+            assert any(
+                isinstance(component, gr.State) and component.value is False
+                for component in blocks.blocks.values()
+            )
             assert self.preferences.get_input_mode() == "voice"
     
     def test_toggle_input_mode_text_to_voice(self):
@@ -113,13 +130,15 @@ class TestChatTabInputModeInteractions:
     def test_history_display_toggle(self):
         """测试历史记录显示切换"""
         # 测试显示历史记录
-        result = self.chat_tab._toggle_history_display(True)
-        assert result["visible"] is True
+        chatbot_update, panel_update = self.chat_tab._toggle_history_display(True)
+        assert chatbot_update["visible"] is True
+        assert panel_update["visible"] is True
         assert self.chat_tab.preferences.get_show_history() is True
         
         # 测试隐藏历史记录
-        result = self.chat_tab._toggle_history_display(False)
-        assert result["visible"] is False
+        chatbot_update, panel_update = self.chat_tab._toggle_history_display(False)
+        assert chatbot_update["visible"] is False
+        assert panel_update["visible"] is False
         assert self.chat_tab.preferences.get_show_history() is False
     
     def test_history_display_persistence(self):
@@ -316,7 +335,7 @@ class TestChatTabUIComponents:
         """测试主题生成功能"""
         preferences = UserPreferences(config_dir=self.temp_dir)
         
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
+        with patch('chatterpal.web.components.chat_tab.get_preferences_manager') as mock_get_prefs:
             mock_get_prefs.return_value = preferences
             chat_tab = ChatTab(self.mock_chat_service)
             
@@ -332,7 +351,7 @@ class TestChatTabUIComponents:
         
         preferences = UserPreferences(config_dir=self.temp_dir)
         
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
+        with patch('chatterpal.web.components.chat_tab.get_preferences_manager') as mock_get_prefs:
             mock_get_prefs.return_value = preferences
             chat_tab = ChatTab(self.mock_chat_service)
             
@@ -379,7 +398,7 @@ class TestChatTabStateManagement:
         """测试会话状态管理"""
         preferences = UserPreferences(config_dir=self.temp_dir)
         
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
+        with patch('chatterpal.web.components.chat_tab.get_preferences_manager') as mock_get_prefs:
             mock_get_prefs.return_value = preferences
             chat_tab = ChatTab(self.mock_chat_service)
             
@@ -388,7 +407,12 @@ class TestChatTabStateManagement:
             
             # 模拟聊天创建会话
             self.mock_chat_service.create_session.return_value = "new_session_id"
-            chat_tab._handle_chat(None, "test", [], True)
+            self.mock_chat_service.process_chat.return_value = (
+                (16000, []), [["test", "Test response"]]
+            )
+            audio, history = chat_tab._handle_chat(None, "test", [], True)
+            assert audio == (16000, [])
+            assert history == [["test", "Test response"]]
             
             # 验证会话ID被设置
             assert chat_tab.current_session_id == "new_session_id"

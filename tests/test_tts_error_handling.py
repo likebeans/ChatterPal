@@ -5,11 +5,18 @@ TTS错误处理功能测试
 
 import pytest
 import time
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 
-from chatterpal.core.tts.base import TTSBase, TTSResult, TTSError
-from chatterpal.core.errors import error_handler, SpeechSynthesisError
+from chatterpal.core.tts.base import TTSBase, TTSResult
+from chatterpal.core.errors import AudioOutputError, SpeechSynthesisError
 from chatterpal.services.chat import ChatService
+from chatterpal.core.llm.openai import OpenAILLM
+
+
+@pytest.fixture(autouse=True)
+def no_retry_delay(monkeypatch):
+    """Keep retries deterministic without spending time on backoff."""
+    monkeypatch.setattr("chatterpal.core.tts.base.time.sleep", lambda seconds: None)
 
 
 class MockTTSWithErrorHandling(TTSBase):
@@ -50,14 +57,16 @@ class MockTTSWithErrorHandling(TTSBase):
             return False
 
 
-class MockTTSBasic(TTSBase):
-    """基本的模拟TTS类(不支持增强错误处理)"""
-    
+class MockTTSBasic:
+    """Legacy synthesis boundary without the enhanced base-class interface."""
+
     def __init__(self, config=None):
-        super().__init__(config)
+        self.config = config or {}
         self.should_fail = False
+        self.call_count = 0
     
     def synthesize(self, text: str, **kwargs) -> bytes:
+        self.call_count += 1
         if self.should_fail:
             raise Exception("TTS服务错误")
         return b"basic tts audio data"
@@ -169,7 +178,7 @@ class TestTTSErrorHandling:
     
     def test_audio_duration_estimation(self):
         """测试音频时长估算"""
-        # 创建简单的音频数据2000字节 = 1秒的166kHz音频
+        # One second of mono PCM16 at 16 kHz occupies 32,000 bytes.
         audio_data = b'\x00' * 32000
         
         duration = self.tts._estimate_audio_duration(audio_data)
@@ -189,43 +198,79 @@ class TestTTSErrorHandling:
         cache_stats = self.tts.get_cache_stats()
         assert cache_stats["entries"] <= 2
     
-    def test_play_audio_with_error_handling(self):
-        """测试音频播放错误处理"""
-        # 测试空音频数- 应该捕获异常并返回False
-        try:
-            success = self.tts.play_audio_with_error_handling(b"")
-            assert success is False
-        except Exception:
-            # 如果抛出异常也是可以接受
-            pass
-        
-        # 测试None音频数据
-        try:
-            success = self.tts.play_audio_with_error_handling(None)
-            assert success is False
-        except Exception:
-            # 如果抛出异常也是可以接受
-            pass
-        
-        # 测试有效音频数据(可能失败,取决于系统环境)
-        audio_data = b"fake audio data"
-        try:
-            success = self.tts.play_audio_with_error_handling(audio_data)
-            # 不验证结果,因为播放可能在测试环境中失败
-        except Exception:
-            # 播放失败在测试环境中是正常的
-            pass
+    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
+    def test_play_audio_with_error_handling(self, platform_name):
+        """Keep real playback orchestration and replace each platform's device API."""
+        import io
+        import os
+        import sys
+        import wave
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(16000)
+            output.writeframes(b"\x00\x00" * 16000)
+        audio_data = buffer.getvalue()
+        paths = []
+        path_type = type(Path())
+        fail_playback = False
+
+        def play(path, *args, **kwargs):
+            path = path_type(path)
+            paths.append(path)
+            assert path.read_bytes() == audio_data
+            if fail_playback:
+                raise OSError("No audio device")
+
+        winsound = SimpleNamespace(PlaySound=Mock(side_effect=play), SND_FILENAME=131072)
+        with patch.dict(sys.modules, {"winsound": winsound}), patch(
+            "os.name", platform_name
+        ), patch(
+            "subprocess.run", side_effect=lambda command, **kwargs: play(command[1])
+        ) as run:
+            playback = winsound.PlaySound if platform_name == "nt" else run
+            unused = run if platform_name == "nt" else winsound.PlaySound
+            for invalid in (b"", None):
+                with pytest.raises(AudioOutputError) as error:
+                    self.tts.play_audio_with_error_handling(invalid)
+                assert error.value.error_info.code == "AUDIO_PLAYBACK_ERROR"
+            playback.assert_not_called()
+
+            assert self.tts.play_audio_with_error_handling(audio_data) is True
+            playback.assert_called_once()
+            assert not paths[-1].exists()
+
+            playback.reset_mock()
+            fail_playback = True
+            with pytest.raises(AudioOutputError) as error:
+                self.tts.play_audio_with_error_handling(audio_data)
+            assert error.value.error_info.code == "AUDIO_PLAYBACK_ERROR"
+            playback.assert_called_once()
+            unused.assert_not_called()
+            assert not paths[-1].exists()
 
 
 class TestChatServiceTTSIntegration:
-    """测试ChatService与TTS的集""
+    """测试ChatService与TTS的集成。"""
     
+    @pytest.fixture(autouse=True)
+    def llm_http(self):
+        with patch("chatterpal.core.llm.openai.requests.post") as post:
+            post.return_value.json.return_value = {
+                "choices": [{"message": {"content": "Test response"}}]
+            }
+            yield
+
     def setup_method(self):
         """设置测试环境"""
         self.tts_enhanced = MockTTSWithErrorHandling()
         self.tts_basic = MockTTSBasic()
-        self.llm = Mock()
-        self.llm.chat.return_value = "Test response"
+        self.llm = OpenAILLM({"api_key": "test_key"})
     
     def test_chat_service_with_enhanced_tts(self):
         """测试ChatService使用增强TTS"""
@@ -244,6 +289,7 @@ class TestChatServiceTTSIntegration:
         audio_data = chat_service._synthesize_with_error_handling("Hello")
         assert audio_data is not None
         assert audio_data == b"basic tts audio data"
+        assert self.tts_basic.call_count == 1
     
     def test_chat_service_tts_failure_graceful(self):
         """测试TTS失败时的优雅处理"""
@@ -270,7 +316,8 @@ class TestChatServiceTTSIntegration:
         # 应该有文本回复,但没有音
         assert len(chat_history) > 0
         assert "Test response" in str(chat_history)
-        assert audio_output == (16000, [])  # 空音
+        assert audio_output is None
+        assert chat_history == [["Hello", "Test response"]]
 
 
 class TestTTSCacheManagement:
@@ -284,8 +331,10 @@ class TestTTSCacheManagement:
             "cache_ttl": 1  # 1秒过期时
         })
     
-    def test_cache_expiration(self):
+    def test_cache_expiration(self, monkeypatch):
         """测试缓存过期"""
+        clock = [1000.0]
+        monkeypatch.setattr("chatterpal.core.tts.base.time.time", lambda: clock[0])
         # 添加缓存条目
         result1 = self.tts.synthesize_with_error_handling("Expire test")
         assert result1.cached is False
@@ -294,8 +343,8 @@ class TestTTSCacheManagement:
         result2 = self.tts.synthesize_with_error_handling("Expire test")
         assert result2.cached is True
         
-        # 等待缓存过期
-        time.sleep(1.1)
+        # Advance only the clock used by cache expiry.
+        clock[0] += 1.1
         
         # 再次请求,应该重新合成
         result3 = self.tts.synthesize_with_error_handling("Expire test")

@@ -2,11 +2,11 @@
 增强ASR功能测试
 """
 
+import time
+import wave
+
 import numpy as np
 import pytest
-import tempfile
-import os
-from unittest.mock import Mock, patch
 
 from chatterpal.core.asr.base import (
     ASRBase, 
@@ -26,10 +26,9 @@ class MockASR(ASRBase):
         super().__init__(config)
         self.mock_result = "测试识别结果"
         self.should_fail = False
-        self.processing_delay = 0.1
+        self.processing_delay = 0.0
         
     def recognize(self, audio_data: bytes, **kwargs):
-        import time
         time.sleep(self.processing_delay)
         
         if self.should_fail:
@@ -38,7 +37,6 @@ class MockASR(ASRBase):
         return self.mock_result
     
     def recognize_file(self, audio_path: str, **kwargs):
-        import time
         time.sleep(self.processing_delay)
         
         if self.should_fail:
@@ -120,46 +118,34 @@ class TestASREnhanced:
         assert result.text == "a"
         
     def test_recognize_enhanced_quality_error(self):
-        """测试音频质量过低错误"""
-        # 模拟质量检查返回很低的分数
-        with patch.object(self.asr, '_assess_audio_quality', return_value=0.1):
-            audio_data = self._create_test_audio_bytes()
-            
-            with pytest.raises(ASRQualityError) as exc_info:
-                self.asr.recognize_enhanced(audio_data)
-            
-            assert "音频质量过低" in str(exc_info.value)
+        """Reject a clipped constant signal through the real quality assessor."""
+        audio_data = np.full(16000, 32000, dtype="<i2").tobytes()
+        with pytest.raises(ASRQualityError) as exc_info:
+            self.asr.recognize_enhanced(audio_data)
+        assert "音频质量过低" in str(exc_info.value)
             
     def test_recognize_enhanced_confidence_error(self):
-        """测试识别置信度过低错误"""
-        # 模拟返回置信度很低的文本,并确保音频质量也很低
-        self.asr.mock_result = "aaaaaaaaaa"  # 重复字符,会降低置信度
+        """Reject a repetitive transcript with mostly silent audio."""
+        self.asr.mock_result = "aaaaaaaaaa"
+        tone = np.frombuffer(self._create_test_audio_bytes(duration=0.1), dtype="<i2")
+        audio_data = np.concatenate([tone, np.zeros(14400, dtype="<i2")]).tobytes()
+        with pytest.raises(ASRConfidenceError) as exc_info:
+            self.asr.recognize_enhanced(audio_data)
+        assert "识别置信度过低" in str(exc_info.value)
         
-        # 模拟低质量音频以进一步降低置信度
-        with patch.object(self.asr, '_assess_audio_quality') as mock_assess:
-            mock_assess.side_effect = lambda audio_data, metadata: (
-                metadata.update({
-                    "quality_score": 1,  # 低质量分数
-                    "snr": 2,  # 低信噪比
-                    "silence_ratio": 0.9  # 高静音比例
-                }), 0.5  # 返回中等质量分数以通过质量检查
-            )[1]
-            
-            audio_data = self._create_test_audio_bytes()
-            
-            with pytest.raises(ASRConfidenceError) as exc_info:
-                self.asr.recognize_enhanced(audio_data)
-            
-            assert "识别置信度过低" in str(exc_info.value)
-        
-    def test_recognize_enhanced_timeout_error(self):
-        """测试识别超时错误"""
-        self.asr.processing_delay = 6.0  # 超过max_processing_time
+    def test_recognize_enhanced_timeout_error(self, monkeypatch):
+        """Check the real elapsed-time guard without waiting six seconds."""
+        clock = [1000.0]
+
+        def advance(seconds):
+            clock[0] += seconds
+
+        monkeypatch.setattr(time, "time", lambda: clock[0])
+        monkeypatch.setattr(time, "sleep", advance)
+        self.asr.processing_delay = 6.0
         audio_data = self._create_test_audio_bytes()
-        
         with pytest.raises(ASRTimeoutError) as exc_info:
             self.asr.recognize_enhanced(audio_data)
-        
         assert "识别超时" in str(exc_info.value)
         
     def test_recognize_enhanced_exception_handling(self):
@@ -179,14 +165,14 @@ class TestASREnhanced:
         audio_data = self._create_test_audio_bytes()
         metadata = {}
         
-        # 这个测试依赖于AudioProcessor的存在
-        try:
-            quality_score = self.asr._assess_audio_quality(audio_data, metadata)
-            assert 0 <= quality_score <= 1
-            assert isinstance(metadata, dict)
-        except ImportError:
-            # 如果AudioProcessor不可用,跳过测试
-            pytest.skip("AudioProcessor not available")
+        quality_score = self.asr._assess_audio_quality(audio_data, metadata)
+        assert 0 <= quality_score <= 1
+        assert isinstance(metadata, dict)
+        assert metadata["sample_count"] == 16000
+        assert metadata["duration"] == pytest.approx(1.0)
+        assert "quality_score" in metadata
+        assert "snr" in metadata
+        assert "validation_issues" in metadata
             
     def test_simple_audio_quality_check(self):
         """测试简化的音频质量检查"""
@@ -198,21 +184,18 @@ class TestASREnhanced:
         assert 0 <= quality_score <= 1
         assert "data_size" in metadata
         
-    def test_simple_audio_quality_check_file(self):
-        """测试文件路径的简化音频质量检查"""
-        # 创建临时音频文件
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(self._create_test_audio_bytes())
-            temp_path = temp_file.name
-        
-        try:
-            metadata = {}
-            quality_score = self.asr._simple_audio_quality_check(temp_path, metadata)
-            
-            assert 0 <= quality_score <= 1
-            assert "file_size" in metadata
-        finally:
-            os.unlink(temp_path)
+    def test_simple_audio_quality_check_file(self, tmp_path):
+        """Use a real WAV for the file-size fallback quality check."""
+        path = tmp_path / "input.wav"
+        with wave.open(str(path), "wb") as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(16000)
+            audio.writeframes(self._create_test_audio_bytes())
+        metadata = {}
+        quality_score = self.asr._simple_audio_quality_check(str(path), metadata)
+        assert 0 <= quality_score <= 1
+        assert metadata["file_size"] == path.stat().st_size
             
     def test_calculate_confidence_empty_text(self):
         """测试空文本的置信度计算"""
@@ -268,20 +251,18 @@ class TestASREnhanced:
         
         is_valid, message = self.asr.validate_audio_for_recognition(audio_data)
         
-        # 结果取决于具体的质量评估,但不应该抛出异常
+        # The valid test tone should pass the real quality assessment.
         assert isinstance(is_valid, bool)
         assert isinstance(message, str)
+        assert is_valid is True
+        assert message == "音频质量良好，适合识别"
         
     def test_validate_audio_for_recognition_failure(self):
-        """测试音频验证失败情况"""
-        # 模拟质量检查返回很低的分数
-        with patch.object(self.asr, '_assess_audio_quality', return_value=0.1):
-            audio_data = self._create_test_audio_bytes()
-            
-            is_valid, message = self.asr.validate_audio_for_recognition(audio_data)
-            
-            assert not is_valid
-            assert "音频质量过低" in message
+        """Reject clipped audio through the real validation path."""
+        audio_data = np.full(16000, 32000, dtype="<i2").tobytes()
+        is_valid, message = self.asr.validate_audio_for_recognition(audio_data)
+        assert not is_valid
+        assert "音频质量过低" in message
             
     def test_get_recognition_suggestions(self):
         """测试获取识别建议"""
@@ -294,26 +275,13 @@ class TestASREnhanced:
         assert all(isinstance(s, str) for s in suggestions)
         
     def test_get_recognition_suggestions_with_issues(self):
-        """测试有问题音频的识别建议"""
-        # 模拟有问题的音频元数据
-        mock_metadata = {
-            "snr": 3,  # 低信噪比
-            "silence_ratio": 0.8,  # 高静音比例
-            "max_amplitude": 0.05,  # 低音量
-            "duration": 0.3  # 短时长
-        }
-        
-        with patch.object(self.asr, '_assess_audio_quality') as mock_assess:
-            mock_assess.side_effect = lambda audio_data, metadata: (
-                metadata.update(mock_metadata), 0.3
-            )[1]
-            
-            audio_data = self._create_test_audio_bytes()
-            suggestions = self.asr.get_recognition_suggestions(audio_data)
-            
-            # 应该包含针对各种问题的建议
-            suggestion_text = " ".join(suggestions)
-            assert "噪音" in suggestion_text or "静音" in suggestion_text or "音量" in suggestion_text
+        """Produce useful suggestions from quiet, short audio."""
+        audio_data = np.zeros(4800, dtype="<i2").tobytes()
+        suggestions = self.asr.get_recognition_suggestions(audio_data)
+        suggestion_text = " ".join(suggestions)
+        assert "静音" in suggestion_text
+        assert "音量" in suggestion_text
+        assert "时长" in suggestion_text
             
     def _create_test_audio_bytes(self, duration=1.0, sample_rate=16000):
         """创建测试用的音频字节数据"""
@@ -358,7 +326,7 @@ class TestASRIntegration:
     def test_full_enhanced_recognition_pipeline(self):
         """测试完整的增强识别流程"""
         asr = MockASR({
-            "min_confidence": 0.3,  # 降低阈值以便测试通过
+            "min_confidence": 0.6,
             "min_audio_quality": 0.2,
             "max_processing_time": 10.0
         })
@@ -398,7 +366,7 @@ class TestASRIntegration:
         )
         
         # 添加少量噪音
-        noise = np.random.normal(0, 0.02, len(audio_float))
+        noise = np.random.default_rng(2026).normal(0, 0.02, len(audio_float))
         audio_float += noise
         
         # 转换为16位整数

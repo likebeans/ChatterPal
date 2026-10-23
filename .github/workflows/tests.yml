@@ -1,0 +1,40 @@
+name: Python tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GRADIO_ANALYTICS_ENABLED: "False"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install audio build dependencies
+        run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libsndfile1 ffmpeg
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.10.7"
+          enable-cache: true
+      - name: Install locked Python environment
+        run: uv sync --frozen --python 3.12
+      - name: Collect every test without external services
+        run: uv run --frozen python -m pytest -o addopts='' --collect-only -q
+      - name: Run offline regression and measure full-package coverage
+        run: uv run --frozen python -m pytest -q --cov-report=xml --junitxml=pytest-results.xml -W error::RuntimeWarning
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-test-reports
+          path: |
+            pytest-results.xml
+            coverage.xml
+            htmlcov/
+          if-no-files-found: ignore

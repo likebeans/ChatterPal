@@ -17,6 +17,15 @@ from chatterpal.utils.preferences import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_preferences_state(tmp_path, monkeypatch):
+    """Keep the global convenience API away from checkout/user preferences."""
+    from chatterpal.utils import preferences
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(preferences, "_preferences_manager", None)
+
+
 class TestUserPreferences:
     """用户偏好设置测试"""
     

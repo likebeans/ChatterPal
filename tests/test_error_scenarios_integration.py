@@ -1,1026 +1,364 @@
-﻿"""
-错误场景集成测试
-测试网络中断和恢复、音频设备故障、服务超时处理场
-验证错误提示的用户友好
-"""
+﻿"""网络、设备和服务故障经过真实聊天服务与 ChatTab 的集成测试。"""
+
+import socket
+import tempfile
+from unittest.mock import Mock, patch
 
 import pytest
-import numpy as np
-import tempfile
-import time
-import threading
-from unittest.mock import Mock, patch, MagicMock
-from typing import List, Tuple, Any
 
+from chatterpal.core.asr.base import ASRBase, ASRResult, ConfidenceLevel
+from chatterpal.core.errors import error_handler
+from chatterpal.core.llm.base import LLMBase, LLMError
+from chatterpal.core.tts.base import TTSBase, TTSResult
 from chatterpal.services.chat import ChatService
-from chatterpal.web.components.chat_tab import ChatTab
 from chatterpal.utils.preferences import UserPreferences
-from chatterpal.core.errors import (
-    error_handler, ChatModuleError, AudioInputError, 
-    SpeechRecognitionError, SpeechSynthesisError
-)
+from chatterpal.web.components.chat_tab import ChatTab
+from tests.test_error_handling import sample_audio, wav_audio
 
 
-class TestNetworkInterruptionScenarios:
-    """网络中断和恢复场景测""
-    
-    def setup_method(self):
-        """测试前设""
-        # 创建可控制的模拟组件
-        self.mock_asr = Mock()
-        self.mock_tts = Mock()
-        self.mock_llm = Mock()
-        
-        # 网络状态控
-        self.network_available = True
-        
-        # 设置网络相关的模拟行
-        def asr_with_network_check(*args, **kwargs):
-            if not self.network_available:
-                raise Exception("网络连接超时")
-            return "Hello, how are you"
-        
-        def tts_with_network_check(*args, **kwargs):
-            if not self.network_available:
-                raise Exception("网络连接超时")
-            return b"fake audio data"
-        
-        def llm_with_network_check(*args, **kwargs):
-            if not self.network_available:
-                raise Exception("网络连接超时")
-            return "I'm fine, thank you!"
-        
-        self.mock_asr.recognize.side_effect = asr_with_network_check
-        self.mock_asr.recognize_file.side_effect = asr_with_network_check
-        self.mock_asr.recognize_gradio_audio.side_effect = asr_with_network_check
-        
-        self.mock_tts.synthesize.side_effect = tts_with_network_check
-        
-        self.mock_llm.chat.side_effect = llm_with_network_check
-        
-        # 创建增强的错误处理方
-        from dataclasses import dataclass
-        
-        @dataclass
-        class ASRResult:
-            text: str
-            confidence: float = 0.9
-            
-        def asr_enhanced_with_network(*args, **kwargs):
-            if not self.network_available:
-                raise error_handler.create_error("NETWORK_ERROR", message="网络连接不可)
-            return ASRResult(text="Hello, how are you")
-        
-        @dataclass
-        class TTSResult:
-            audio_data: bytes
-            synthesis_time: float = 1.0
-            cached: bool = False
-            
-        def tts_enhanced_with_network(*args, **kwargs):
-            if not self.network_available:
-                raise error_handler.create_error("NETWORK_ERROR", message="网络连接不可)
-            return TTSResult(audio_data=b"fake audio data")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_with_network
-        self.mock_tts.synthesize_with_error_handling = tts_enhanced_with_network
-        
-        # 创建ChatService
-        self.chat_service = ChatService(
-            asr=self.mock_asr,
-            tts=self.mock_tts,
-            llm=self.mock_llm
-        )
-        
-        # 创建ChatTab
-        self.temp_dir = tempfile.mkdtemp()
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
-            self.preferences = UserPreferences(config_dir=self.temp_dir)
-            mock_get_prefs.return_value = self.preferences
-            self.chat_tab = ChatTab(self.chat_service)
-    
-    def teardown_method(self):
-        """测试后清""
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
-    def test_network_interruption_during_voice_chat(self):
-        """
-        测试语音对话过程中的网络中断
-        需 1.3, 4.1, 4.2, 4.3, 4.4
-        """
-        # 1. 正常建立会话
-        session_id = self.chat_service.create_session()
-        
-        # 2. 正常进行一轮对
-        response1, _ = self.chat_service.chat_with_text("Hello", session_id)
-        assert response1 == "I'm fine, thank you!"
-        
-        # 3. 模拟网络中断
-        self.network_available = False
-        
-        # 4. 尝试语音对话,应该失败但有友好错误提
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证错误处理
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in [
-            "网络", "连接", "不可, "重试", "稍后"
-        ])
-        
-        # 5. 模拟网络恢复
-        self.network_available = True
-        
-        # 6. 再次尝试对话,应该成
-        result = self.chat_tab._handle_chat(
-            text_input="Network is back",
-            audio=None,
-            chat_history=[],
-            use_text=True
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证恢复后正常工
-        assert len(chat_history) > 0
-        success_message = str(chat_history)
-        assert "I'm fine, thank you!" in success_message
-    
-    def test_network_timeout_handling(self):
-        """
-        测试网络超时处理
-        需 1.3, 2.3, 4.4
-        """
-        # 模拟超时错误
-        def timeout_error(*args, **kwargs):
-            import socket
-            raise socket.timeout("连接超时")
-        
-        self.mock_llm.chat.side_effect = timeout_error
-        
-        # 尝试文本对话
-        with pytest.raises(Exception) as exc_info:
-            self.chat_service.chat_with_text("Hello")
-        
-        # 验证超时错误被正确处
-        assert "超时" in str(exc_info.value) or "timeout" in str(exc_info.value).lower()
-    
-    def test_network_recovery_with_retry_mechanism(self):
-        """
-        测试网络恢复的重试机
-        需 4.1, 4.2, 4.3
-        """
-        # 设置重试计数
-        retry_count = 0
-        max_retries = 3
-        
-        def failing_then_success(*args, **kwargs):
-            nonlocal retry_count
-            retry_count += 1
-            if retry_count < max_retries:
-                raise Exception("网络暂时不可")
-            return "重试成功后的回复"
-        
-        self.mock_llm.chat.side_effect = failing_then_success
-        
-        # 使用ChatService的重试机
-        session_id = self.chat_service.create_session()
-        
-        # 多次尝试直到成功
-        success = False
-        for attempt in range(max_retries + 1):
-            try:
-                response, _ = self.chat_service.chat_with_text("Test retry", session_id)
-                success = True
-                break
-            except Exception as e:
-                if attempt < max_retries:
-                    time.sleep(0.1)  # 短暂等待后重
-                    continue
-                else:
-                    raise
-        
-        assert success
-        assert retry_count == max_retries
-    
-    def test_partial_network_failure(self):
-        """
-        测试部分网络服务失败的处
-        需 1.3, 2.3
-        """
-        # 只让TTS服务失败,其他服务正
-        def tts_network_fail(*args, **kwargs):
-            raise Exception("TTS服务网络错误")
-        
-        self.mock_tts.synthesize.side_effect = tts_network_fail
-        self.mock_tts.synthesize_with_error_handling.side_effect = tts_network_fail
-        
-        # 进行文本对话
-        result = self.chat_tab._handle_chat(
-            text_input="Hello world",
-            audio=None,
-            chat_history=[],
-            use_text=True
-        )
-        
-        audio_output, chat_history = result
-        
-        # 文本对话应该成功,但没有音频输出
-        assert len(chat_history) > 0
-        assert "I'm fine, thank you!" in str(chat_history)
-        assert audio_output == (16000, [])  # 没有音频输出
+@pytest.fixture(autouse=True)
+def no_retry_waits(monkeypatch):
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
 
 
-class TestAudioDeviceFailureScenarios:
-    """音频设备故障场景测试"""
-    
-    def setup_method(self):
-        """测试前设""
-        self.mock_asr = Mock()
-        self.mock_tts = Mock()
-        self.mock_llm = Mock()
-        
-        # 音频设备状态控
-        self.microphone_available = True
-        self.speaker_available = True
-        
-        # 设置音频设备相关的模拟行
-        def asr_with_device_check(*args, **kwargs):
-            if not self.microphone_available:
-                raise Exception("麦克风设备不可用")
-            return "Hello from microphone"
-        
-        def tts_with_device_check(*args, **kwargs):
-            if not self.speaker_available:
-                raise Exception("音频输出设备不可")
-            return b"fake audio output"
-        
-        self.mock_asr.recognize.side_effect = asr_with_device_check
-        self.mock_asr.recognize_file.side_effect = asr_with_device_check
-        self.mock_asr.recognize_gradio_audio.side_effect = asr_with_device_check
-        
-        self.mock_tts.synthesize.side_effect = tts_with_device_check
-        
+class _ErrorScenario:
+    """替换提供商接口；聊天编排、会话、错误映射和界面回调使用生产代码。"""
+
+    @pytest.fixture(autouse=True)
+    def setup_scenario(self):
+        self.mock_asr = Mock(spec=ASRBase)
+        self.mock_tts = Mock(spec=TTSBase)
+        self.mock_llm = Mock(spec=LLMBase)
+        self.mock_asr.recognize_with_error_handling.return_value = self.asr_result()
+        self.mock_tts.synthesize.return_value = wav_audio()
+        self.mock_tts.synthesize_with_error_handling.side_effect = self.synthesize_result
         self.mock_llm.chat.return_value = "Device test response"
-        
-        # 创建增强的错误处理方
-        from dataclasses import dataclass
-        
-        @dataclass
-        class ASRResult:
-            text: str
-            confidence: float = 0.9
-            
-        def asr_enhanced_with_device(*args, **kwargs):
-            if not self.microphone_available:
-                raise error_handler.create_error("AUDIO_DEVICE_ERROR", message="麦克风设备不可用")
-            return ASRResult(text="Hello from microphone")
-        
-        @dataclass
-        class TTSResult:
-            audio_data: bytes
-            synthesis_time: float = 1.0
-            cached: bool = False
-            
-        def tts_enhanced_with_device(*args, **kwargs):
-            if not self.speaker_available:
-                raise error_handler.create_error("AUDIO_DEVICE_ERROR", message="音频输出设备不可用")
-            return TTSResult(audio_data=b"fake audio output")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_with_device
-        self.mock_tts.synthesize_with_error_handling = tts_enhanced_with_device
-        
-        # 创建服务
+        self.mock_asr.test_connection.return_value = True
+        self.mock_tts.test_connection.return_value = True
+        self.mock_llm.test_connection.return_value = True
         self.chat_service = ChatService(
-            asr=self.mock_asr,
-            tts=self.mock_tts,
-            llm=self.mock_llm
+            asr=self.mock_asr, tts=self.mock_tts, llm=self.mock_llm
         )
-        
-        # 创建ChatTab
-        self.temp_dir = tempfile.mkdtemp()
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
-            self.preferences = UserPreferences(config_dir=self.temp_dir)
-            mock_get_prefs.return_value = self.preferences
-            self.chat_tab = ChatTab(self.chat_service)
-    
-    def teardown_method(self):
-        """测试后清""
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
-    def test_microphone_device_failure(self):
-        """
-        测试麦克风设备故
-        需 4.1, 4.2, 4.3
-        """
-        # 1. 模拟麦克风不可用
-        self.microphone_available = False
-        
-        # 2. 尝试语音输入
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
+        with tempfile.TemporaryDirectory() as config_dir:
+            self.preferences = UserPreferences(config_dir=config_dir)
+            # ChatTab 在使用处导入该函数，必须 patch 使用处以免写入真实用户偏好。
+            with patch(
+                "chatterpal.web.components.chat_tab.get_preferences_manager",
+                return_value=self.preferences,
+            ):
+                self.chat_tab = ChatTab(self.chat_service)
+            yield
+
+    def asr_result(self, text="Hello, how are you?"):
+        return ASRResult(text, 0.9, ConfidenceLevel.HIGH, 0.8, 0.1, {})
+
+    def synthesize_result(self, text, **kwargs):
+        # 通过 synthesize 边界注入故障，不将 side_effect 写到普通函数属性上。
+        audio = self.mock_tts.synthesize(text)
+        return TTSResult(text, audio, 1.0, "wav", 16000, False, 0.1, {})
+
+    def voice_chat(self, chat_history=None):
+        return self.chat_tab._handle_chat(
+            audio=(16000, sample_audio()),
             text_input="",
-            chat_history=[],
-            use_text=False
+            chat_history=[] if chat_history is None else chat_history,
+            use_text=False,
         )
-        
-        audio_output, chat_history = result
-        
-        # 3. 验证错误处理和用户友好提
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in [
-            "麦克, "设备", "不可, "权限", "文本输入"
-        ])
-        
-        # 4. 验证建议切换到文本输
-        # 错误消息应该建议用户使用文本输入
-        assert any(keyword in error_message for keyword in [
-            "文本", "输入", "切换", "替代"
-        ])
-    
-    def test_speaker_device_failure(self):
-        """
-        测试扬声器设备故
-        需 2.3, 5.3
-        """
-        # 1. 模拟扬声器不可用
-        self.speaker_available = False
-        
-        # 2. 进行文本对话(应该成功,但没有音频输出)
-        result = self.chat_tab._handle_chat(
-            text_input="Hello, test speaker failure",
+
+    def text_chat(self, text, chat_history=None):
+        return self.chat_tab._handle_chat(
             audio=None,
-            chat_history=[],
-            use_text=True
+            text_input=text,
+            chat_history=[] if chat_history is None else chat_history,
+            use_text=True,
         )
-        
-        audio_output, chat_history = result
-        
-        # 3. 验证文本对话成功
-        assert len(chat_history) > 0
-        assert "Device test response" in str(chat_history)
-        
-        # 4. 验证没有音频输出(优雅降级)
-        assert audio_output == (16000, [])
-    
-    def test_audio_permission_denied(self):
-        """
-        测试音频权限被拒绝的场景
-        需 4.1, 4.2
-        """
-        # 模拟权限错误
-        def permission_denied(*args, **kwargs):
-            raise PermissionError("麦克风权限被拒绝")
-        
-        self.mock_asr.recognize.side_effect = permission_denied
-        self.mock_asr.recognize_file.side_effect = permission_denied
-        self.mock_asr.recognize_gradio_audio.side_effect = permission_denied
-        
-        def asr_enhanced_permission_denied(*args, **kwargs):
-            raise error_handler.create_error("AUDIO_PERMISSION_ERROR", message="麦克风权限被拒绝")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_permission_denied
-        
-        # 尝试语音输入
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证权限错误的友好提
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in [
-            "权限", "麦克, "允许", "设置", "浏览
-        ])
-    
-    def test_audio_format_not_supported(self):
-        """
-        测试不支持的音频格式
-        需 4.1, 4.3
-        """
-        # 模拟格式不支持错
-        def format_error(*args, **kwargs):
-            raise ValueError("不支持的音频格式")
-        
-        self.mock_asr.recognize.side_effect = format_error
-        self.mock_asr.recognize_gradio_audio.side_effect = format_error
-        
-        def asr_enhanced_format_error(*args, **kwargs):
-            raise error_handler.create_error("AUDIO_FORMAT_ERROR", message="不支持的音频格式")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_format_error
-        
-        # 尝试语音输入
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证格式错误的友好提
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in [
-            "格式", "支持", "音频", "重新录制"
-        ])
 
 
-class TestServiceTimeoutScenarios:
-    """服务超时处理场景测试"""
-    
-    def setup_method(self):
-        """测试前设""
-        self.mock_asr = Mock()
-        self.mock_tts = Mock()
-        self.mock_llm = Mock()
-        
-        # 创建ChatService
-        self.chat_service = ChatService(
-            asr=self.mock_asr,
-            tts=self.mock_tts,
-            llm=self.mock_llm
-        )
-        
-        # 创建ChatTab
-        self.temp_dir = tempfile.mkdtemp()
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
-            self.preferences = UserPreferences(config_dir=self.temp_dir)
-            mock_get_prefs.return_value = self.preferences
-            self.chat_tab = ChatTab(self.chat_service)
-    
-    def teardown_method(self):
-        """测试后清""
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
-    def test_asr_service_timeout(self):
-        """
-        测试ASR服务超时
-        需 1.3, 4.4
-        """
-        # 模拟ASR超时
-        def asr_timeout(*args, **kwargs):
-            time.sleep(0.1)  # 模拟处理时间
-            raise TimeoutError("ASR服务响应超时")
-        
-        self.mock_asr.recognize.side_effect = asr_timeout
-        self.mock_asr.recognize_gradio_audio.side_effect = asr_timeout
-        
-        def asr_enhanced_timeout(*args, **kwargs):
-            raise error_handler.create_error("ASR_TIMEOUT", message="语音识别服务响应超时")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_timeout
-        
-        # 尝试语音输入
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证超时错误的友好提
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in [
-            "超时", "响应", ", "重试", "稍后"
-        ])
-    
-    def test_tts_service_timeout(self):
-        """
-        测试TTS服务超时
-        需 2.3, 5.3
-        """
-        # 模拟TTS超时
-        def tts_timeout(*args, **kwargs):
-            time.sleep(0.1)  # 模拟处理时间
-            raise TimeoutError("TTS服务响应超时")
-        
-        self.mock_tts.synthesize.side_effect = tts_timeout
-        
-        def tts_enhanced_timeout(*args, **kwargs):
-            raise error_handler.create_error("TTS_TIMEOUT", message="语音合成服务响应超时")
-        
-        self.mock_tts.synthesize_with_error_handling = tts_enhanced_timeout
-        
-        # 设置LLM正常工作
-        self.mock_llm.chat.return_value = "TTS timeout test response"
-        
-        # 进行文本对话
-        result = self.chat_tab._handle_chat(
-            text_input="Test TTS timeout",
-            audio=None,
-            chat_history=[],
-            use_text=True
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证文本对话成功,但没有音频输出
-        assert len(chat_history) > 0
-        assert "TTS timeout test response" in str(chat_history)
-        assert audio_output == (16000, [])  # TTS超时,没有音频输
-    
-    def test_llm_service_timeout(self):
-        """
-        测试LLM服务超时
-        需 1.3
-        """
-        # 模拟LLM超时
-        def llm_timeout(*args, **kwargs):
-            time.sleep(0.1)  # 模拟处理时间
-            raise TimeoutError("LLM服务响应超时")
-        
-        self.mock_llm.chat.side_effect = llm_timeout
-        
-        # 尝试文本对话
-        with pytest.raises(Exception) as exc_info:
-            self.chat_service.chat_with_text("Test LLM timeout")
-        
-        # 验证超时错误被正确处
-        error_str = str(exc_info.value).lower()
-        assert "超时" in error_str or "timeout" in error_str
-    
-    def test_multiple_service_timeouts(self):
-        """
-        测试多个服务同时超时
-        需 1.3, 2.3, 4.4
-        """
-        # 模拟所有服务都超时
-        def universal_timeout(*args, **kwargs):
-            raise TimeoutError("服务响应超时")
-        
-        self.mock_asr.recognize.side_effect = universal_timeout
-        self.mock_asr.recognize_gradio_audio.side_effect = universal_timeout
-        self.mock_tts.synthesize.side_effect = universal_timeout
-        self.mock_llm.chat.side_effect = universal_timeout
-        
-        def asr_enhanced_timeout(*args, **kwargs):
-            raise error_handler.create_error("ASR_TIMEOUT", message="语音识别服务超时")
-        
-        def tts_enhanced_timeout(*args, **kwargs):
-            raise error_handler.create_error("TTS_TIMEOUT", message="语音合成服务超时")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_timeout
-        self.mock_tts.synthesize_with_error_handling = tts_enhanced_timeout
-        
-        # 尝试语音对话
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证系统不会崩溃,有友好的错误提
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in [
-            "超时", "服务", "不可, "重试", "稍后"
-        ])
-    
-    def test_timeout_with_retry_mechanism(self):
-        """
-        测试超时后的重试机制
-        需 4.4
-        """
-        # 设置重试计数
-        retry_count = 0
-        
-        def timeout_then_success(*args, **kwargs):
-            nonlocal retry_count
-            retry_count += 1
-            if retry_count < 3:
-                raise TimeoutError("服务暂时超时")
-            return "重试成功的回
-        
-        self.mock_llm.chat.side_effect = timeout_then_success
-        
-        # 手动实现重试逻辑
+class TestNetworkInterruptionScenarios(_ErrorScenario):
+    @pytest.fixture(autouse=True)
+    def network_boundaries(self, setup_scenario):
+        self.network_available = True
+
+        def recognize(*args, **kwargs):
+            if not self.network_available:
+                raise error_handler.create_error("NETWORK_ERROR")
+            return self.asr_result()
+
+        def synthesize(*args, **kwargs):
+            if not self.network_available:
+                raise ConnectionError("网络连接超时")
+            return wav_audio()
+
+        def chat(*args, **kwargs):
+            if not self.network_available:
+                raise ConnectionError("网络连接超时")
+            return "I'm fine, thank you!"
+
+        self.mock_asr.recognize_with_error_handling.side_effect = recognize
+        self.mock_tts.synthesize.side_effect = synthesize
+        self.mock_llm.chat.side_effect = chat
+
+    def test_network_interruption_during_voice_chat(self):
         session_id = self.chat_service.create_session()
-        max_retries = 3
-        success = False
-        
-        for attempt in range(max_retries):
+        response, returned_session = self.chat_service.chat_with_text("Hello", session_id)
+        assert response == "I'm fine, thank you!"
+        assert returned_session == session_id
+        self.chat_tab.current_session_id = session_id
+        self.network_available = False
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        assert any(word in str(history) for word in ["网络", "连接", "不可用", "重试", "稍后"])
+        self.mock_asr.recognize_with_error_handling.assert_called_once()
+        self.network_available = True
+        audio, history = self.text_chat("Network is back")
+        assert len(history) > 0
+        assert "I'm fine, thank you!" in str(history)
+        assert audio[0] == 16000
+        assert len(audio[1]) == 16000
+        assert self.chat_tab.current_session_id == session_id
+
+    def test_network_timeout_handling(self):
+        self.mock_llm.chat.side_effect = socket.timeout("连接超时")
+        with pytest.raises(LLMError) as exc_info:
+            self.chat_service.chat_with_text("Hello")
+        assert "超时" in str(exc_info.value) or "timeout" in str(exc_info.value).lower()
+        assert isinstance(exc_info.value.__cause__, socket.timeout)
+
+    def test_network_recovery_with_retry_mechanism(self):
+        calls = 0
+
+        def temporary_failure(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise ConnectionError("网络暂时不可用")
+            return "重试成功后的回复"
+
+        self.mock_llm.chat.side_effect = temporary_failure
+        session_id = self.chat_service.create_session()
+        response = None
+        # 文本入口将提供商错误包装成 LLMError；由调用方重试。
+        for _ in range(3):
             try:
-                response, _ = self.chat_service.chat_with_text("Test timeout retry", session_id)
-                success = True
+                response, returned_session = self.chat_service.chat_with_text(
+                    "Test retry", session_id
+                )
                 break
-            except TimeoutError:
-                if attempt < max_retries - 1:
-                    time.sleep(0.1)  # 短暂等待后重
-                    continue
-                else:
-                    break
-        
-        assert success
-        assert retry_count == 3
-
-
-class TestUserFriendlyErrorMessages:
-    """用户友好错误消息测试"""
-    
-    def setup_method(self):
-        """测试前设""
-        self.mock_asr = Mock()
-        self.mock_tts = Mock()
-        self.mock_llm = Mock()
-        
-        # 创建ChatService
-        self.chat_service = ChatService(
-            asr=self.mock_asr,
-            tts=self.mock_tts,
-            llm=self.mock_llm
-        )
-        
-        # 创建ChatTab
-        self.temp_dir = tempfile.mkdtemp()
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
-            self.preferences = UserPreferences(config_dir=self.temp_dir)
-            mock_get_prefs.return_value = self.preferences
-            self.chat_tab = ChatTab(self.chat_service)
-    
-    def teardown_method(self):
-        """测试后清""
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
-    def test_error_message_localization(self):
-        """
-        测试错误消息的本地化
-        需 1.3, 2.3, 4.1, 4.2, 4.3, 4.4
-        """
-        # 测试不同类型的错误消
-        error_scenarios = [
-            {
-                "error": Exception("Network connection failed"),
-                "expected_keywords": ["网络", "连接", "重试"]
-            },
-            {
-                "error": PermissionError("Microphone access denied"),
-                "expected_keywords": ["权限", "麦克, "允许"]
-            },
-            {
-                "error": TimeoutError("Service timeout"),
-                "expected_keywords": ["超时", "服务", "稍后"]
-            },
-            {
-                "error": ValueError("Invalid audio format"),
-                "expected_keywords": ["格式", "音频", "支持"]
-            }
-        ]
-        
-        for scenario in error_scenarios:
-            # 设置错误
-            self.mock_asr.recognize_gradio_audio.side_effect = scenario["error"]
-            
-            def asr_enhanced_error(*args, **kwargs):
-                raise scenario["error"]
-            
-            self.mock_asr.recognize_with_error_handling = asr_enhanced_error
-            
-            # 触发错误
-            sample_rate = 16000
-            audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-            gradio_audio = (sample_rate, audio_array)
-            
-            result = self.chat_tab._handle_chat(
-                audio=gradio_audio,
-                text_input="",
-                chat_history=[],
-                use_text=False
-            )
-            
-            audio_output, chat_history = result
-            
-            # 验证错误消息包含预期关键
-            assert len(chat_history) > 0
-            error_message = str(chat_history).lower()
-            
-            # 检查是否包含预期关键词或通用友好词汇
-            expected_keywords = scenario["expected_keywords"] + ["问题", "重试", "稍后"]
-            has_expected_keyword = any(
-                keyword in error_message 
-                for keyword in expected_keywords
-            )
-            assert has_expected_keyword, f"错误消息 '{error_message}' 不包含预期关键词 {expected_keywords}"
-    
-    def test_error_message_actionable_suggestions(self):
-        """
-        测试错误消息包含可操作的建议
-        需 1.3, 4.1, 4.2, 4.3
-        """
-        # 模拟麦克风权限错
-        def permission_error(*args, **kwargs):
-            raise PermissionError("麦克风权限被拒绝")
-        
-        self.mock_asr.recognize_gradio_audio.side_effect = permission_error
-        
-        def asr_enhanced_permission_error(*args, **kwargs):
-            raise error_handler.create_error("AUDIO_PERMISSION_ERROR", message="麦克风权限被拒绝")
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_permission_error
-        
-        # 触发错误
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 验证错误消息包含可操作的建议
-        assert len(chat_history) > 0
-        error_message = str(chat_history).lower()
-        
-        # 应该包含具体的解决建
-        actionable_keywords = [
-            "设置", "允许", "权限", "浏览, "文本输入", "切换"
-        ]
-        has_actionable_suggestion = any(
-            keyword in error_message 
-            for keyword in actionable_keywords
-        )
-        assert has_actionable_suggestion, f"错误消息应包含可操作建议: {error_message}"
-    
-    def test_error_message_severity_levels(self):
-        """
-        测试不同严重程度的错误消
-        需 1.3, 2.3, 4.4
-        """
-        # 轻微错误:TTS失败(不影响核心功能
-        def tts_minor_error(*args, **kwargs):
-            raise Exception("语音合成暂时不可")
-        
-        self.mock_tts.synthesize_with_error_handling = tts_minor_error
-        self.mock_llm.chat.return_value = "Text response works fine"
-        
-        result = self.chat_tab._handle_chat(
-            text_input="Test minor error",
-            audio=None,
-            chat_history=[],
-            use_text=True
-        )
-        
-        audio_output, chat_history = result
-        
-        # 轻微错误:文本对话应该成功,只是没有音频
-        assert len(chat_history) > 0
-        assert "Text response works fine" in str(chat_history)
-        assert audio_output == (16000, [])
-        
-        # 严重错误:LLM失败(影响核心功能)
-        def llm_critical_error(*args, **kwargs):
-            raise Exception("语言模型服务完全不可用")
-        
-        self.mock_llm.chat.side_effect = llm_critical_error
-        
-        with pytest.raises(Exception"):
-            self.chat_service.chat_with_text("Test critical error")
-    
-    def test_progressive_error_disclosure(self):
-        """
-        测试渐进式错误信息披
-        需 4.1, 4.2, 4.3, 4.4
-        """
-        # 模拟连续失败的场
-        failure_count = 0
-        
-        def progressive_failure(*args, **kwargs):
-            nonlocal failure_count
-            failure_count += 1
-            
-            if failure_count == 1:
-                raise Exception("临时网络问题")
-            elif failure_count == 2:
-                raise Exception("服务响应超时")
-            else:
-                raise Exception("服务长时间不可用,请稍后重试")
-        
-        self.mock_asr.recognize_gradio_audio.side_effect = progressive_failure
-        
-        def asr_enhanced_progressive(*args, **kwargs):
-            return progressive_failure(*args, **kwargs)
-        
-        self.mock_asr.recognize_with_error_handling = asr_enhanced_progressive
-        
-        # 多次尝试,观察错误消息的变化
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array)
-        
-        error_messages = []
-        
-        for attempt in range(3):
-            result = self.chat_tab._handle_chat(
-                audio=gradio_audio,
-                text_input="",
-                chat_history=[],
-                use_text=False
-            )
-            
-            audio_output, chat_history = result
-            if len(chat_history) > 0:
-                error_messages.append(str(chat_history).lower())
-        
-        # 验证错误消息随着失败次数增加而提供更多信
-        assert len(error_messages) == 3
-        
-        # 第一次:简单的重试建议
-        assert any(keyword in error_messages[0] for keyword in ["网络", "重试"])
-        
-        # 第二次:更具体的问题描述
-        assert any(keyword in error_messages[1] for keyword in ["超时", "服务"])
-        
-        # 第三次:更详细的解决方案
-        assert any(keyword in error_messages[2] for keyword in ["稍后", "长时])
-
-
-class TestErrorRecoveryIntegration:
-    """错误恢复集成测试"""
-    
-    def setup_method(self):
-        """测试前设""
-        self.mock_asr = Mock()
-        self.mock_tts = Mock()
-        self.mock_llm = Mock()
-        
-        # 创建ChatService
-        self.chat_service = ChatService(
-            asr=self.mock_asr,
-            tts=self.mock_tts,
-            llm=self.mock_llm
-        )
-        
-        # 创建ChatTab
-        self.temp_dir = tempfile.mkdtemp()
-        with patch('chatterpal.utils.preferences.get_preferences_manager') as mock_get_prefs:
-            self.preferences = UserPreferences(config_dir=self.temp_dir)
-            mock_get_prefs.return_value = self.preferences
-            self.chat_tab = ChatTab(self.chat_service)
-    
-    def teardown_method(self):
-        """测试后清""
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-    
-    def test_graceful_degradation_chain(self):
-        """
-        测试优雅降级
-        需 1.3, 2.3, 3.1, 3.2
-        """
-        session_id = self.chat_service.create_session()
-        
-        # 场景1:语音输入失-> 建议文本输入
-        def asr_fail(*args, **kwargs):
-            raise Exception("语音识别不可用")
-        
-        self.mock_asr.recognize_gradio_audio.side_effect = asr_fail
-        self.mock_asr.recognize_with_error_handling.side_effect = asr_fail
-        
-        sample_rate = 16000
-        audio_array = np.random.random(sample_rate).astype(np.float32) * 0.5
-        gradio_audio = (sample_rate, audio_array")
-        
-        result = self.chat_tab._handle_chat(
-            audio=gradio_audio,
-            text_input="",
-            chat_history=[],
-            use_text=False
-        )
-        
-        audio_output, chat_history = result
-        
-        # 应该建议切换到文本输
-        error_message = str(chat_history).lower()
-        assert any(keyword in error_message for keyword in ["文本", "输入", "切换"])
-        
-        # 场景2:切换到文本输入,LLM正常工作
-        self.mock_llm.chat.return_value = "文本输入工作正常"
-        
-        result = self.chat_tab._handle_chat(
-            text_input="Hello via text",
-            audio=None,
-            chat_history=[],
-            use_text=True
-        )
-        
-        audio_output, chat_history = result
-        
-        # 文本对话应该成功
-        assert "文本输入工作正常" in str(chat_history)
-        
-        # 场景3:TTS失败,但文本回复仍然显示
-        def tts_fail(*args, **kwargs):
-            raise Exception("语音合成不可")
-        
-        self.mock_tts.synthesize_with_error_handling = tts_fail
-        
-        result = self.chat_tab._handle_chat(
-            text_input="Another text message",
-            audio=None,
-            chat_history=chat_history,
-            use_text=True
-        )
-        
-        audio_output, chat_history = result
-        
-        # 文本对话仍然成功,只是没有音
-        assert "文本输入工作正常" in str(chat_history)
-        assert audio_output == (16000, [])
-    
-    def test_error_state_cleanup(self):
-        """
-        测试错误状态清
-        需 1.3, 2.3, 4.4
-        """
-        session_id = self.chat_service.create_session()
-        
-        # 1. 触发错误状
-        def temporary_error(*args, **kwargs):
-            raise Exception("临时错误")
-        
-        self.mock_llm.chat.side_effect = temporary_error
-        
-        # 尝试对话,应该失
-        with pytest.raises(Exception):
-            self.chat_service.chat_with_text("Test error", session_id)
-        
-        # 2. 清除错误状
-        self.mock_llm.chat.side_effect = None
-        self.mock_llm.chat.return_value = "错误已恢
-        
-        # 3. 再次尝试,应该成
-        response, _ = self.chat_service.chat_with_text("Test recovery", session_id)
-        assert response == "错误已恢
-        
-        # 4. 验证会话状态正
+            except LLMError as error:
+                assert isinstance(error.__cause__, ConnectionError)
+        assert response == "重试成功后的回复"
+        assert returned_session == session_id
+        assert calls == 3
         history = self.chat_service.get_conversation_history(session_id)
-        user_messages = [msg for msg in history if msg["role"] == "user"]
-        assert len(user_messages) >= 1
-        assert user_messages[-1]["content"] == "Test recovery"
+        assert sum(message["role"] == "user" for message in history) == 1
+
+    def test_partial_network_failure(self):
+        self.mock_tts.synthesize.side_effect = ConnectionError("TTS服务网络错误")
+        audio, history = self.text_chat("Hello world")
+        assert len(history) > 0
+        assert "I'm fine, thank you!" in str(history)
+        assert audio is None
+        self.mock_tts.synthesize.assert_called_once()
+
+
+class TestAudioDeviceFailureScenarios(_ErrorScenario):
+    def test_microphone_device_failure(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = OSError("麦克风设备不可用")
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        message = str(history)
+        assert any(word in message for word in ["麦克风", "设备", "不可用", "权限", "文本输入"])
+        assert any(word in message for word in ["文本", "输入", "切换", "替代"])
+
+    def test_speaker_device_failure(self):
+        self.mock_tts.synthesize.side_effect = OSError("音频输出设备不可用")
+        audio, history = self.text_chat("Hello, test speaker failure")
+        assert len(history) > 0
+        assert "Device test response" in str(history)
+        assert audio is None
+        self.mock_tts.synthesize.assert_called_once()
+
+    def test_audio_permission_denied(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = PermissionError("麦克风权限被拒绝")
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        assert any(
+            word in str(history) for word in ["权限", "麦克风", "允许", "设置", "浏览器"]
+        )
+
+    def test_audio_format_not_supported(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = error_handler.create_error(
+            "AUDIO_FORMAT_ERROR", message="不支持的音频格式"
+        )
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        assert any(word in str(history) for word in ["格式", "支持", "音频", "重新录制"])
+
+
+class TestServiceTimeoutScenarios(_ErrorScenario):
+    def test_asr_service_timeout(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = error_handler.create_error(
+            "ASR_TIMEOUT", message="语音识别服务响应超时"
+        )
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        assert any(word in str(history) for word in ["超时", "响应", "重试", "稍后"])
+
+    def test_tts_service_timeout(self):
+        self.mock_tts.synthesize.side_effect = TimeoutError("TTS服务响应超时")
+        self.mock_llm.chat.return_value = "TTS timeout test response"
+        audio, history = self.text_chat("Test TTS timeout")
+        assert len(history) > 0
+        assert "TTS timeout test response" in str(history)
+        assert audio is None
+        self.mock_tts.synthesize.assert_called_once()
+
+    def test_llm_service_timeout(self):
+        self.mock_llm.chat.side_effect = TimeoutError("LLM服务响应超时")
+        with pytest.raises(LLMError) as exc_info:
+            self.chat_service.chat_with_text("Test LLM timeout")
+        error = str(exc_info.value).lower()
+        assert "超时" in error or "timeout" in error
+        assert isinstance(exc_info.value.__cause__, TimeoutError)
+
+    def test_multiple_service_timeouts(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = error_handler.create_error(
+            "ASR_TIMEOUT", message="语音识别服务超时"
+        )
+        self.mock_tts.synthesize.side_effect = TimeoutError("语音合成服务超时")
+        self.mock_llm.chat.side_effect = TimeoutError("语言模型服务超时")
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        assert any(word in str(history) for word in ["超时", "服务", "不可用", "重试", "稍后"])
+        self.mock_llm.chat.assert_not_called()
+        self.mock_tts.synthesize.assert_not_called()
+
+    def test_timeout_with_retry_mechanism(self):
+        calls = 0
+
+        def timeout_then_success(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise TimeoutError("服务暂时超时")
+            return "重试成功的回复"
+
+        self.mock_llm.chat.side_effect = timeout_then_success
+        session_id = self.chat_service.create_session()
+        response = None
+        for _ in range(3):
+            try:
+                response, returned_session = self.chat_service.chat_with_text(
+                    "Test timeout retry", session_id
+                )
+                break
+            except LLMError as error:
+                assert isinstance(error.__cause__, TimeoutError)
+        assert response == "重试成功的回复"
+        assert returned_session == session_id
+        assert calls == 3
+
+
+class TestUserFriendlyErrorMessages(_ErrorScenario):
+    @pytest.mark.parametrize(
+        "error,expected_keywords",
+        [
+            (ConnectionError("Network connection failed"), ["网络", "连接", "重试"]),
+            (PermissionError("Microphone access denied"), ["权限", "麦克风", "允许"]),
+            (TimeoutError("Service timeout"), ["超时", "服务", "稍后"]),
+            (ValueError("Invalid audio format"), ["格式", "音频", "支持"]),
+        ],
+        ids=["network", "permission", "timeout", "format"],
+    )
+    def test_error_message_localization(self, error, expected_keywords):
+        self.mock_asr.recognize_with_error_handling.side_effect = error
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        message = str(history)
+        assert any(word in message for word in expected_keywords), (
+            f"错误消息 {message!r} 不包含预期关键词 {expected_keywords}"
+        )
+
+    def test_error_message_actionable_suggestions(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = PermissionError("麦克风权限被拒绝")
+        audio, history = self.voice_chat()
+        assert len(history) > 0
+        assert audio is None
+        actionable = ["设置", "允许", "权限", "浏览器", "文本输入", "切换"]
+        assert any(word in str(history) for word in actionable), (
+            f"错误消息应包含可操作建议: {history}"
+        )
+
+    def test_error_message_severity_levels(self):
+        self.mock_tts.synthesize.side_effect = RuntimeError("语音合成暂时不可用")
+        self.mock_llm.chat.return_value = "Text response works fine"
+        audio, history = self.text_chat("Test minor error")
+        assert len(history) > 0
+        assert "Text response works fine" in str(history)
+        assert audio is None
+        self.mock_llm.chat.side_effect = RuntimeError("语言模型服务完全不可用")
+        with pytest.raises(LLMError):
+            self.chat_service.chat_with_text("Test critical error")
+
+    def test_progressive_error_disclosure(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = [
+            ConnectionError("临时网络问题"),
+            TimeoutError("服务响应超时"),
+            RuntimeError("服务长时间不可用，请稍后重试"),
+        ]
+        messages = []
+        for _ in range(3):
+            audio, history = self.voice_chat()
+            assert audio is None
+            assert len(history) > 0
+            messages.append(str(history))
+        assert len(messages) == 3
+        assert any(word in messages[0] for word in ["网络", "重试"])
+        assert any(word in messages[1] for word in ["超时", "服务"])
+        assert any(word in messages[2] for word in ["稍后", "长时间"])
+        assert self.mock_asr.recognize_with_error_handling.call_count == 3
+
+
+class TestErrorRecoveryIntegration(_ErrorScenario):
+    def test_graceful_degradation_chain(self):
+        self.mock_asr.recognize_with_error_handling.side_effect = RuntimeError("语音识别不可用")
+        audio, history = self.voice_chat()
+        assert any(word in str(history) for word in ["文本", "输入", "切换"])
+        assert audio is None
+        self.mock_llm.chat.return_value = "文本输入工作正常"
+        audio, history = self.text_chat("Hello via text")
+        assert "文本输入工作正常" in str(history)
+        assert audio[0] == 16000
+        self.mock_tts.synthesize.side_effect = RuntimeError("语音合成不可用")
+        audio, history = self.text_chat("Another text message", chat_history=history)
+        assert "文本输入工作正常" in str(history)
+        assert audio is None
+        assert history[-1] == ["Another text message", "文本输入工作正常"]
+
+    def test_error_state_cleanup(self):
+        session_id = self.chat_service.create_session()
+        history_before = self.chat_service.get_conversation_history(session_id)
+        self.mock_llm.chat.side_effect = RuntimeError("临时错误")
+        with pytest.raises(LLMError):
+            self.chat_service.chat_with_text("Test error", session_id)
+        assert self.chat_service.get_conversation_history(session_id) == history_before
+        self.mock_llm.chat.side_effect = None
+        self.mock_llm.chat.return_value = "错误已恢复"
+        response, returned_session = self.chat_service.chat_with_text("Test recovery", session_id)
+        assert response == "错误已恢复"
+        assert returned_session == session_id
+        history = self.chat_service.get_conversation_history(session_id)
+        users = [message for message in history if message["role"] == "user"]
+        assert len(users) >= 1
+        assert users[-1]["content"] == "Test recovery"
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-
-
-
-
-
-
-
-

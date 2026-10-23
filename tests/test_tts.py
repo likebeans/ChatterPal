@@ -4,9 +4,11 @@ Tests for TTS (Text-to-Speech) modules.
 
 import os
 import tempfile
+from pathlib import Path
+
+import numpy as np
 import pytest
-from unittest.mock import Mock, patch, MagicMock, AsyncMock
-import asyncio
+from unittest.mock import Mock, patch, AsyncMock
 
 from chatterpal.core.tts.base import TTSBase, TTSError
 from chatterpal.core.tts.edge import EdgeTTS
@@ -169,7 +171,7 @@ class TestTTSBase:
         tts = MockTTS()
         
         # Mock librosa and soundfile
-        mock_sf_read.return_value = ([0.1, 0.2, 0.3], 16000)
+        mock_sf_read.return_value = (np.array([0.1, 0.2, 0.3]), 16000)
         
         audio_data = b"fake audio data"
         info = tts.get_audio_info(audio_data)
@@ -180,11 +182,12 @@ class TestTTSBase:
         assert info["format"] == "detected"
     
     def test_get_audio_info_without_librosa(self):
-        """Test getting audio info without librosa."""
+        """Test getting audio info when the optional analyzer is unavailable."""
         tts = MockTTS()
-        
+
         audio_data = b"fake audio data"
-        info = tts.get_audio_info(audio_data)
+        with patch.dict("sys.modules", {"librosa": None}):
+            info = tts.get_audio_info(audio_data)
         
         assert info["size_bytes"] == len(audio_data)
         assert info["format"] == "unknown"
@@ -192,8 +195,22 @@ class TestTTSBase:
 
 
 class TestEdgeTTS:
-    """Test the Edge TTS implementation."""
-    
+    """Test the Edge TTS implementation with only the SDK boundary replaced."""
+
+    @pytest.fixture(autouse=True)
+    def edge_sdk(self, monkeypatch):
+        sdk = Mock()
+        communicate = sdk.Communicate.return_value
+
+        async def save(output_path):
+            Path(output_path).write_bytes(b"audio data")
+
+        communicate.save = AsyncMock(side_effect=save)
+        sdk.list_voices = AsyncMock(return_value=[])
+        monkeypatch.setattr("chatterpal.core.tts.edge.edge_tts", sdk)
+        self.sdk = sdk
+        self.communicate = communicate
+
     def test_initialization(self):
         """Test Edge TTS initialization."""
         config = {"voice": "en-US-AriaNeural", "rate": "+0%", "pitch": "+0Hz"}
@@ -210,115 +227,87 @@ class TestEdgeTTS:
         assert tts.rate == "+0%"
         assert tts.pitch == "+0Hz"
     
-    @patch('edge_tts.Communicate')
-    def test_synthesize_success(self, mock_communicate_class):
-        """Test successful synthesis with Edge TTS."""
-        # Mock the async generator
-        mock_communicate = MagicMock()
-        mock_chunk = MagicMock()
-        mock_chunk.type = "audio"
-        mock_chunk.data = b"audio chunk"
-        
-        async def mock_stream():
-            yield mock_chunk
-        
-        mock_communicate.stream.return_value = mock_stream()
-        mock_communicate_class.return_value = mock_communicate
-        
+    def test_synthesize_success(self):
+        """Test that the async SDK saves bytes read by the real sync adapter."""
         tts = EdgeTTS()
-        
-        # 模拟asyncio.run避免实际异步执行
-        with patch('asyncio.run') as mock_run:
-            mock_run.return_value = b"audio chunk"  # 修正期望
-            
-            result = tts.synthesize("Hello world")
-            assert result == b"audio chunk"
-    
-    @patch('edge_tts.Communicate')
-    def test_synthesize_failure(self, mock_communicate_class):
-        """Test synthesis failure with Edge TTS."""
-        mock_communicate_class.side_effect = Exception("Edge TTS error")
-        
+
+        assert tts.synthesize("Hello world") == b"audio data"
+        self.sdk.Communicate.assert_called_once_with(
+            "Hello world", "en-US-AriaNeural", rate="+0%", pitch="+0Hz", volume="+0%"
+        )
+        self.communicate.save.assert_awaited_once()
+        assert not Path(self.communicate.save.call_args.args[0]).exists()
+
+    def test_synthesize_failure(self):
+        """Test SDK errors become TTSError without bypassing asyncio."""
+        self.communicate.save.side_effect = RuntimeError("Edge TTS error")
         tts = EdgeTTS()
-        
-        with patch('asyncio.run') as mock_run:
-            mock_run.side_effect = TTSError("Edge TTS error")
-            
-            with pytest.raises(TTSError):
-                tts.synthesize("Hello world")
-    
-    def test_synthesize_to_file_success(self):
-        """Test successful file synthesis with Edge TTS."""
+
+        with pytest.raises(TTSError, match="语音合成失败"):
+            tts.synthesize("Hello world")
+        self.communicate.save.assert_awaited_once()
+        assert not Path(self.communicate.save.call_args.args[0]).exists()
+
+    def test_synthesize_to_file_success(self, tmp_path):
+        """Test file synthesis writes the SDK output to the requested path."""
         tts = EdgeTTS()
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_path = temp_file.name
-        
-        try:
-            with patch.object(tts, 'synthesize', return_value=b"audio data"):
-                result = tts.synthesize_to_file("Hello world", temp_path)
-                assert result is True
-                assert os.path.exists(temp_path)
-                
-                with open(temp_path, 'rb') as f:
-                    content = f.read()
-                    assert content == b"audio data"
-        finally:
-            if os.path.exists(temp_path):
-                os.unlink(temp_path)
-    
-    def test_synthesize_to_file_failure(self):
-        """Test file synthesis failure with Edge TTS."""
+        output_path = tmp_path / "output.wav"
+
+        assert tts.synthesize_to_file("Hello world", str(output_path)) is True
+        assert output_path.read_bytes() == b"audio data"
+        self.communicate.save.assert_awaited_once_with(str(output_path))
+
+    def test_synthesize_to_file_failure(self, tmp_path):
+        """Test file synthesis propagates a failed SDK save."""
+        self.communicate.save.side_effect = RuntimeError("Synthesis failed")
         tts = EdgeTTS()
-        
-        with patch.object(tts, 'synthesize', side_effect=TTSError("Synthesis failed")):
-            with pytest.raises(TTSError):
-                tts.synthesize_to_file("Hello world", "output.wav")
-    
-    @patch('edge_tts.list_voices')
-    def test_get_supported_voices(self, mock_list_voices):
-        """Test getting supported voices from Edge TTS."""
-        mock_voices = [
+        output_path = tmp_path / "output.wav"
+
+        with pytest.raises(TTSError, match="语音合成失败"):
+            tts.synthesize_to_file("Hello world", str(output_path))
+        self.communicate.save.assert_awaited_once_with(str(output_path))
+        assert not output_path.exists()
+
+    def test_get_supported_voices(self):
+        """Test the SDK voice catalog is normalized and returned."""
+        self.sdk.list_voices.return_value = [
             {"Name": "en-US-AriaNeural", "Gender": "Female"},
             {"Name": "en-US-GuyNeural", "Gender": "Male"},
         ]
-        
-        async def mock_async_voices():
-            return mock_voices
-        
-        mock_list_voices.return_value = mock_async_voices()
-        
         tts = EdgeTTS()
-        
-        with patch('asyncio.run') as mock_run:
-            mock_run.return_value = ["en-US-AriaNeural", "en-US-GuyNeural"]
-            
-            voices = tts.get_supported_voices()
-            assert "en-US-AriaNeural" in voices
-            assert "en-US-GuyNeural" in voices
-    
+
+        voices = tts.get_supported_voices()
+        assert "en-US-AriaNeural" in voices
+        assert "en-US-GuyNeural" in voices
+        self.sdk.list_voices.assert_awaited_once_with()
+
     def test_get_supported_voices_failure(self):
-        """Test getting supported voices failure."""
+        """Test a catalog failure returns usable default voices."""
+        self.sdk.list_voices.side_effect = RuntimeError("API error")
         tts = EdgeTTS()
-        
-        with patch('asyncio.run', side_effect=Exception("API error")):
-            voices = tts.get_supported_voices()
-            # Should return default voices on failure
-            assert isinstance(voices, list)
-    
+
+        voices = tts.get_supported_voices()
+        assert isinstance(voices, list)
+        assert "en-US-AriaNeural" in voices
+        assert "en-US-GuyNeural" in voices
+        self.sdk.list_voices.assert_awaited_once_with()
+
     def test_test_connection_success(self):
-        """Test successful connection test."""
+        """Test the connection probe exercises synthesis and cleans its file."""
         tts = EdgeTTS()
-        
-        with patch.object(tts, 'synthesize', return_value=b"test audio"):
-            assert tts.test_connection() is True
-    
+
+        assert tts.test_connection() is True
+        self.communicate.save.assert_awaited_once()
+        assert not Path(self.communicate.save.call_args.args[0]).exists()
+
     def test_test_connection_failure(self):
-        """Test failed connection test."""
+        """Test a connection probe returns False on an SDK failure."""
+        self.communicate.save.side_effect = RuntimeError("Connection failed")
         tts = EdgeTTS()
-        
-        with patch.object(tts, 'synthesize', side_effect=TTSError("Connection failed")):
-            assert tts.test_connection() is False
+
+        assert tts.test_connection() is False
+        self.communicate.save.assert_awaited_once()
+        assert not Path(self.communicate.save.call_args.args[0]).exists()
     
     def test_voice_configuration(self):
         """测试语音配置"""

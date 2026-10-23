@@ -1,63 +1,72 @@
-﻿"""
-Test application startup functionality
-"""
+﻿"""Application construction stays offline and does not start a server."""
 
-import pytest
-import os
-from unittest.mock import patch, Mock
+import importlib.util
+from pathlib import Path
+from unittest.mock import Mock
 
-def test_app_startup():
-    """测试应用启动功能"""
-    try:
-        # 设置环境变量以避免真实API调用
-        os.environ['ALIBABA_API_KEY'] = 'test_key'
-        os.environ['ALIBABA_API_SECRET'] = 'test_secret'
-        
-        from chatterpal.web.app import create_app
-        
-        # 模拟Gradio接口以避免实际启
-        with patch('gradio.TabbedInterface') as mock_interface:
-            mock_interface.return_value = Mock()
-            
-            app = create_app()
-            assert app is not None
-            
-            print("✅应用可以成功创建")
-            
-    except Exception as e:
-        pytest.fail(f"应用启动测试失败: {e}")
-    finally:
-        # 清理环境变量
-        if 'ALIBABA_API_KEY' in os.environ:
-            del os.environ['ALIBABA_API_KEY']
-        if 'ALIBABA_API_SECRET' in os.environ:
-            del os.environ['ALIBABA_API_SECRET']
+import gradio as gr
 
-def test_run_script_exists():
-    """测试运行脚本存在"""
-    import os
-    
-    # 检查运行脚
-    run_py_path = "scripts/run.py"
-    assert os.path.exists(run_py_path), f"运行脚本 {run_py_path} 不存在"
-    
-    # 检查脚本可以导
-    try:
-        import sys
-        sys.path.insert(0, 'scripts')
-        import run
-        assert hasattr(run, 'main') or hasattr(run, 'run_app'), "运行脚本缺少主函数"
-        print("✅运行脚本存在且可导入")
-    except Exception as e:
-        pytest.fail(f"运行脚本测试失败: {e}")
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])
+from chatterpal.config.settings import Settings
+from chatterpal.core.asr.whisper import WhisperASR
+from chatterpal.core.llm.alibaba import AlibabaBailianLLM
+from chatterpal.core.tts.edge import EdgeTTS
+from chatterpal.services.chat import ChatService
+from chatterpal.services.correction import CorrectionService
+from chatterpal.services.evaluation import EvaluationService
+from chatterpal.utils.preferences import UserPreferences
 
 
+def test_app_startup(tmp_path, monkeypatch):
+    """Construct real providers/services while replacing SDK network boundaries."""
+    from chatterpal.web.app import ChatterPalApp, create_app
+
+    client = Mock()
+    monkeypatch.setattr("chatterpal.core.llm.alibaba.OpenAI", lambda **kwargs: client)
+    voices = [{"ShortName": "en-US-AriaNeural", "Gender": "Female", "Locale": "en-US"}]
+
+    async def list_voices():
+        return voices
+
+    monkeypatch.setattr("chatterpal.core.tts.edge.edge_tts.list_voices", list_voices)
+    preferences = UserPreferences(config_dir=str(tmp_path / "preferences"))
+    monkeypatch.setattr("chatterpal.web.components.chat_tab.get_preferences_manager", lambda: preferences)
+    settings = Settings(
+        _env_file=None,
+        asr_provider="whisper", tts_provider="edge", llm_provider="alibaba",
+        dashscope_api_key="offline-test-key",
+        audio_temp_dir=str(tmp_path / "audio"),
+        cache_dir=str(tmp_path / "cache"),
+        model_cache_dir=str(tmp_path / "models"),
+    )
+    app = create_app(settings=settings)
+    assert isinstance(app, ChatterPalApp)
+    assert app.settings is settings
+    assert isinstance(app.asr, WhisperASR)
+    assert isinstance(app.tts, EdgeTTS)
+    assert isinstance(app.llm, AlibabaBailianLLM)
+    assert isinstance(app.chat_service, ChatService)
+    assert isinstance(app.evaluation_service, EvaluationService)
+    assert isinstance(app.correction_service, CorrectionService)
+    assert app.chat_tab.chat_service is app.chat_service
+    assert app.score_tab.evaluation_service is app.evaluation_service
+    assert app.correct_tab.correction_service is app.correction_service
+    interface = app.create_interface()
+    assert isinstance(interface, gr.Blocks)
+    assert len(interface.fns) >= 3
+    client.chat.completions.create.assert_not_called()
 
 
-
-
-
-
+def test_run_script_exists(monkeypatch):
+    """Load the entrypoint by absolute path without modifying global sys.path."""
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run.py"
+    assert script.is_file(), f"Run script does not exist: {script}"
+    # The imported script sets encoding environment variables; restore them.
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    spec = importlib.util.spec_from_file_location("chatterpal_test_runner", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert callable(module.main)
+    assert callable(module.create_parser)
+    args = module.create_parser().parse_args([])
+    assert args.mode == "web"
