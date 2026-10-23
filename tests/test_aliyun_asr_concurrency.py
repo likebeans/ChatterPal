@@ -191,8 +191,8 @@ def test_audio_route_and_chat_service_keep_aliyun_recognitions_separate(
     }
 
     def stop(transcriber):
-        # Both the route and ChatService get the correct SDK callback for
-        # their own upload. Only worker recognitions are held for overlap.
+        # Each upload gets its own SDK callback in the chat worker.
+        # Hold the recognitions so separate requests overlap.
         transcriber.complete(texts[bytes(transcriber.audio)])
         if threading.get_ident() != loop_thread:
             boundary.stopped.put(transcriber)
@@ -276,7 +276,7 @@ def test_audio_route_and_chat_service_keep_aliyun_recognitions_separate(
 
     asyncio.run(request())
     assert not list(api.temp_dir.glob("input_*.wav"))
-    assert len(boundary.instances) == 4  # Initial and worker recognition per upload.
+    assert len(boundary.instances) == 2  # One worker recognition per upload.
     for session_id, text in (("first", "FIRST AUDIO"), ("second", "SECOND AUDIO")):
         history = api.chat_service.get_conversation_history(session_id)
         assert [message for message in history if message["role"] != "system"] == [
