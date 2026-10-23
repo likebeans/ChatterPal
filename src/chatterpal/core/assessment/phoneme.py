@@ -159,8 +159,9 @@ class PhonemeAnalyzer(AssessmentBase):
                 }
 
             finally:
-                # 清理临时文件
-                self._cleanup_temp_file(audio_path)
+                # 只清理当前调用创建的文件，路径输入由调用方拥有
+                if not isinstance(audio_data, str):
+                    self._cleanup_temp_file(audio_path)
 
         except AssessmentError:
             raise
@@ -181,20 +182,25 @@ class PhonemeAnalyzer(AssessmentBase):
         if isinstance(audio_data, str):
             return audio_data
 
-        # 创建临时文件
-        temp_path = os.path.join(
-            self.temp_dir, f"temp_phoneme_{np.random.randint(10000)}.wav"
+        # 独占创建当前调用拥有的临时文件
+        temp_fd, temp_path = tempfile.mkstemp(
+            dir=self.temp_dir, prefix="temp_phoneme_", suffix=".wav"
         )
 
-        if not self.convert_audio_to_file(audio_data, temp_path):
-            raise AssessmentError("音频文件转换失败")
+        try:
+            os.close(temp_fd)
+            if not self.convert_audio_to_file(audio_data, temp_path):
+                raise AssessmentError("音频文件转换失败")
 
-        return temp_path
+            return temp_path
+        except BaseException:
+            self._cleanup_temp_file(temp_path)
+            raise
 
     def _cleanup_temp_file(self, file_path: str) -> None:
-        """清理临时文件"""
+        """清理调用方已确认由当前调用拥有的临时文件。"""
         try:
-            if os.path.exists(file_path) and file_path.startswith(self.temp_dir):
+            if os.path.exists(file_path):
                 os.remove(file_path)
         except Exception as e:
             self.logger.warning(f"清理临时文件失败: {e}")

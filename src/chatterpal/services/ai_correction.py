@@ -18,6 +18,7 @@ except ImportError:
 
 from .correction import CorrectionService, CorrectionReport
 from ..core.asr.base import ASRBase
+from ..core.assessment.base import AssessmentError
 from ..core.assessment.corrector import PronunciationCorrector
 from ..core.assessment.phoneme import PhonemeAnalyzer
 from ..core.assessment.prosody import ProsodyAnalyzer
@@ -57,6 +58,8 @@ class AIAnalysisResult:
     next_scenario: Optional[ScenarioType]
     confidence_score: float
     detailed_analysis: str
+    overall_score: float = 0.0
+    recognized_text: str = ""
 
 
 @dataclass
@@ -179,19 +182,19 @@ class AICorrectionService:
 参考文本: {reference_text}
 
 请按以下格式返回JSON:
-{
+{{
   "grammar_errors": [
-    {
+    {{
       "error_type": "错误类型",
       "original": "错误部分",
       "corrected": "正确形式",
       "explanation": "详细解释",
       "rule": "相关语法规则"
-    }
+    }}
   ],
   "overall_assessment": "整体语法水平评估",
   "improvement_suggestions": ["具体改进建议"]
-}
+}}
 """,
             
             "pronunciation_analysis": """
@@ -202,18 +205,18 @@ class AICorrectionService:
 参考文本: {reference_text}
 
 请按以下格式返回JSON:
-{
+{{
   "pronunciation_issues": [
-    {
+    {{
       "phoneme": "音素",
       "issue_description": "问题描述",
       "correction_technique": "纠正技巧",
       "practice_words": ["练习单词"]
-    }
+    }}
   ],
   "personalized_tips": ["个性化建议"],
   "difficulty_level": "评估的难度级别"
-}
+}}
 """,
             
             "scenario_recommendation": """
@@ -227,12 +230,12 @@ class AICorrectionService:
 - 难度级别: {difficulty_level}
 
 请按以下格式返回JSON:
-{
+{{
   "recommended_scenario": "推荐场景",
   "difficulty_adjustment": "难度调整建议",
   "focus_areas": ["重点练习领域"],
   "next_steps": ["下一步学习建议"]
-}
+}}
 """
         }
 
@@ -257,14 +260,18 @@ class AICorrectionService:
         Returns:
             AI分析结果
         """
+        self.logger.info("开始综合AI分析")
+        # 基础分析失败不能回退为成功报告；同步分析在工作线程中执行。
+        base_report = await asyncio.to_thread(
+            self.base_service.comprehensive_correction,
+            audio_data, reference_text, **kwargs
+        )
+        if not self.model:
+            return self._create_fallback_result(base_report, "AI增强功能未配置")
+        if not base_report.recognized_text.strip():
+            return self._create_fallback_result(base_report, "识别文本不可用，未执行AI增强")
+
         try:
-            self.logger.info("开始综合AI分析")
-            
-            # 1. 基础发音分析
-            base_report = self.base_service.comprehensive_correction(
-                audio_data, reference_text
-            )
-            
             # 2. AI语法分析
             grammar_corrections = await self._analyze_grammar(
                 base_report.recognized_text, reference_text
@@ -309,7 +316,9 @@ class AICorrectionService:
                 difficulty_assessment=difficulty_assessment,
                 next_scenario=next_scenario,
                 confidence_score=confidence_score,
-                detailed_analysis=detailed_analysis
+                detailed_analysis=detailed_analysis,
+                overall_score=base_report.overall_score,
+                recognized_text=base_report.recognized_text
             )
             
             # 更新用户历史
@@ -340,11 +349,14 @@ class AICorrectionService:
             response = await self._call_gemini_api(prompt)
             result = json.loads(response)
             
-            return result.get("grammar_errors", [])
-            
+            errors = self._validated_items(
+                result, "grammar_errors", ("error_type", "original", "corrected", "explanation")
+            )
+            return [dict(error, type=error["error_type"]) for error in errors]
+
         except Exception as e:
             self.logger.error(f"语法分析失败: {e}")
-            return []
+            raise AssessmentError(f"AI语法分析不可用: {e}") from e
 
     async def _analyze_pronunciation(
         self, base_report: CorrectionReport, reference_text: str
@@ -363,11 +375,36 @@ class AICorrectionService:
             response = await self._call_gemini_api(prompt)
             result = json.loads(response)
             
-            return result.get("pronunciation_issues", [])
-            
+            issues = self._validated_items(
+                result, "pronunciation_issues",
+                ("phoneme", "issue_description", "correction_technique")
+            )
+            return [dict(
+                issue,
+                type="pronunciation",
+                original=issue["phoneme"],
+                corrected=issue["correction_technique"],
+                explanation=issue["issue_description"],
+            ) for issue in issues]
+
         except Exception as e:
             self.logger.error(f"发音分析失败: {e}")
-            return []
+            raise AssessmentError(f"AI发音分析不可用: {e}") from e
+
+    @staticmethod
+    def _validated_items(
+        result: Any, key: str, fields: Tuple[str, ...]
+    ) -> List[Dict[str, Any]]:
+        """只接受当前报告能够显示的结构化条目。"""
+        if not isinstance(result, dict) or not isinstance(result.get(key), list):
+            raise ValueError(f"AI响应缺少列表字段 {key}")
+        items = result[key]
+        for item in items:
+            if not isinstance(item, dict) or any(
+                not isinstance(item.get(field), str) for field in fields
+            ):
+                raise ValueError(f"AI响应字段 {key} 的条目格式无效")
+        return items
 
     async def _recommend_scenarios(
         self,
@@ -702,23 +739,27 @@ class AICorrectionService:
             raise Exception("Gemini API未配置")
         
         try:
-            response = self.model.generate_content(prompt)
+            response = await asyncio.to_thread(self.model.generate_content, prompt)
             return response.text
         except Exception as e:
             self.logger.error(f"Gemini API调用失败: {e}")
             raise
 
-    def _create_fallback_result(self, base_report: CorrectionReport) -> AIAnalysisResult:
-        """创建备用结果"""
+    def _create_fallback_result(
+        self, base_report: CorrectionReport, reason: str = "AI增强功能暂时不可用"
+    ) -> AIAnalysisResult:
+        """保留已完成的基础报告，明确标识未完成的AI增强。"""
         return AIAnalysisResult(
             grammar_corrections=[],
             pronunciation_feedback=[],
             scenario_suggestions=[],
-            personalized_tips=["请检查网络连接后重试"],
-            difficulty_assessment=DifficultyLevel.BEGINNER,
-            next_scenario=ScenarioType.DAILY_CONVERSATION,
-            confidence_score=0.5,
-            detailed_analysis="基础分析完成，AI增强功能暂时不可用"
+            personalized_tips=list(base_report.improvement_suggestions),
+            difficulty_assessment=self._assess_difficulty_level(base_report),
+            next_scenario=None,
+            confidence_score=0.0,
+            detailed_analysis=f"基础分析完成，{reason}。\n\n{base_report.detailed_feedback}",
+            overall_score=base_report.overall_score,
+            recognized_text=base_report.recognized_text
         )
 
     def _update_user_history(self, user_id: str, result: AIAnalysisResult):

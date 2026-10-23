@@ -127,7 +127,30 @@ class APIServer:
         # 创建临时文件目录
         self.temp_dir = Path(tempfile.gettempdir()) / "chatterpal"
         self.temp_dir.mkdir(exist_ok=True)
-    
+        self._analysis_tasks = set()
+
+    def _cleanup_analysis_upload(self, audio_path: Path) -> None:
+        try:
+            audio_path.unlink(missing_ok=True)
+        except OSError as e:
+            self.logger.warning(f"清理分析上传失败: {e}")
+
+    def _start_analysis(self, analysis, audio_path: Path) -> asyncio.Task:
+        """分析任务拥有上传文件，外层请求取消后仍完成清理。"""
+        task = asyncio.create_task(analysis)
+        self._analysis_tasks.add(task)
+
+        def complete(completed):
+            self._analysis_tasks.discard(completed)
+            self._cleanup_analysis_upload(audio_path)
+            if not completed.cancelled():
+                error = completed.exception()
+                if error is not None:
+                    self.logger.error(f"分析任务失败: {error}")
+
+        task.add_done_callback(complete)
+        return task
+
     def _init_core_components(self):
         """初始化核心组件"""
         try:
@@ -342,9 +365,11 @@ class APIServer:
             reference_text: str = Form(...)
         ):
             """发音分析接口"""
+            audio_path = None
+            analysis_task = None
             try:
-                # 保存上传的音频文件
-                audio_filename = f"analyze_{int(asyncio.get_event_loop().time())}.wav"
+                # 每个请求拥有独立的上传副本。
+                audio_filename = f"analyze_{uuid.uuid4().hex}.wav"
                 audio_path = self.temp_dir / audio_filename
                 
                 with open(audio_path, "wb") as f:
@@ -352,16 +377,15 @@ class APIServer:
                     f.write(content)
                 
                 # 进行发音分析
-                report = self.correction_service.comprehensive_correction(
-                    audio_data=str(audio_path),
-                    target_text=reference_text
+                analysis_task = self._start_analysis(
+                    asyncio.to_thread(
+                        self.correction_service.comprehensive_correction,
+                        audio_data=str(audio_path),
+                        target_text=reference_text
+                    ),
+                    audio_path
                 )
-                
-                # 清理临时文件
-                try:
-                    os.unlink(audio_path)
-                except:
-                    pass
+                report = await asyncio.shield(analysis_task)
                 
                 # 解析结果
                 # 构建纠错信息
@@ -370,7 +394,7 @@ class APIServer:
                     corrections.append({
                         "type": error.get("type", "pronunciation"),
                         "original": error.get("word", ""),
-                        "corrected": error.get("correction", ""),
+                        "corrected": error.get("correction", error.get("suggestion", "")),
                         "explanation": error.get("description", "")
                     })
                 
@@ -392,7 +416,10 @@ class APIServer:
             except Exception as e:
                 self.logger.error(f"发音分析失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-        
+            finally:
+                if audio_path is not None and analysis_task is None:
+                    self._cleanup_analysis_upload(audio_path)
+
         self.logger.info("发音分析路由已注册")
         
         @self.app.post("/api/pronunciation/ai-analyze", response_model=AIAnalysisResponse)
@@ -403,9 +430,20 @@ class APIServer:
             user_id: Optional[str] = Form(None)
         ):
             """AI驱动的发音分析接口"""
+            audio_path = None
+            analysis_task = None
             try:
-                # 保存上传的音频文件
-                audio_filename = f"ai_analyze_{int(asyncio.get_event_loop().time())}.wav"
+                scenario = None
+                if current_scenario:
+                    try:
+                        scenario_value, separator, difficulty = current_scenario.partition("-")
+                        scenario = ScenarioType(scenario_value)
+                        if separator:
+                            DifficultyLevel(difficulty)
+                    except ValueError:
+                        raise HTTPException(status_code=422, detail="不支持的练习场景")
+
+                audio_filename = f"ai_analyze_{uuid.uuid4().hex}.wav"
                 audio_path = self.temp_dir / audio_filename
                 
                 with open(audio_path, "wb") as f:
@@ -413,19 +451,27 @@ class APIServer:
                     f.write(content)
                 
                 # 进行AI驱动的综合分析
-                ai_result = await self.ai_correction_service.comprehensive_ai_analysis(
-                    audio_data=str(audio_path),
-                    reference_text=reference_text,
-                    current_scenario=current_scenario,
-                    user_id=user_id
+                analysis_task = self._start_analysis(
+                    self.ai_correction_service.comprehensive_ai_analysis(
+                        audio_data=str(audio_path),
+                        reference_text=reference_text,
+                        current_scenario=scenario,
+                        user_id=user_id
+                    ),
+                    audio_path
                 )
-                
-                # 清理临时文件
-                try:
-                    os.unlink(audio_path)
-                except:
-                    pass
-                
+                ai_result = await asyncio.shield(analysis_task)
+
+                next_scenario = None
+                if ai_result.next_scenario is not None:
+                    context = self.ai_correction_service.get_scenario_context(
+                        ai_result.next_scenario, ai_result.difficulty_assessment
+                    )
+                    if context is not None:
+                        next_scenario = (
+                            f"{context.scenario_type.value}-{context.difficulty_level.value}"
+                        )
+
                 return AIAnalysisResponse(
                     overall_score=ai_result.overall_score,
                     recognized_text=ai_result.recognized_text,
@@ -433,16 +479,21 @@ class APIServer:
                     pronunciation_feedback=ai_result.pronunciation_feedback,
                     scenario_suggestions=ai_result.scenario_suggestions,
                     personalized_tips=ai_result.personalized_tips,
-                    difficulty_level=ai_result.difficulty_level.value,
-                    next_scenario=ai_result.next_scenario,
+                    difficulty_level=ai_result.difficulty_assessment.value,
+                    next_scenario=next_scenario,
                     confidence_score=ai_result.confidence_score,
                     detailed_analysis=ai_result.detailed_analysis
                 )
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 self.logger.error(f"AI发音分析失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-        
+            finally:
+                if audio_path is not None and analysis_task is None:
+                    self._cleanup_analysis_upload(audio_path)
+
         self.logger.info("AI发音分析路由已注册")
         
         @self.app.get("/api/scenarios/{scenario_type}/{difficulty_level}", response_model=ScenarioResponse)

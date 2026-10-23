@@ -77,8 +77,9 @@ class ProsodyAnalyzer(AssessmentBase):
                 }
 
             finally:
-                # 清理临时文件
-                self._cleanup_temp_file(temp_wav_path)
+                # 只清理当前调用创建的文件，路径输入由调用方拥有
+                if not isinstance(audio_data, str):
+                    self._cleanup_temp_file(temp_wav_path)
 
         except AssessmentError:
             raise
@@ -100,38 +101,43 @@ class ProsodyAnalyzer(AssessmentBase):
             # 如果是文件路径，直接返回
             return audio_data
 
-        # 创建临时WAV文件
-        temp_wav_path = os.path.join(
-            self.temp_dir, f"temp_prosody_{np.random.randint(10000)}.wav"
+        # 独占创建当前调用拥有的临时WAV文件
+        temp_fd, temp_wav_path = tempfile.mkstemp(
+            dir=self.temp_dir, prefix="temp_prosody_", suffix=".wav"
         )
 
-        if isinstance(audio_data, tuple):
-            # Gradio音频数据
-            sample_rate, audio_array = audio_data
+        try:
+            os.close(temp_fd)
+            if isinstance(audio_data, tuple):
+                # Gradio音频数据
+                sample_rate, audio_array = audio_data
 
-            # 确保音频数据是16位整数格式
-            if audio_array.dtype != np.int16:
-                if audio_array.dtype in [np.float32, np.float64]:
-                    audio_array = np.clip(audio_array, -1.0, 1.0)
-                    audio_array = (audio_array * 32767).astype(np.int16)
-                else:
-                    audio_array = audio_array.astype(np.int16)
+                # 确保音频数据是16位整数格式
+                if audio_array.dtype != np.int16:
+                    if audio_array.dtype in [np.float32, np.float64]:
+                        audio_array = np.clip(audio_array, -1.0, 1.0)
+                        audio_array = (audio_array * 32767).astype(np.int16)
+                    else:
+                        audio_array = audio_array.astype(np.int16)
 
-            # 保存为WAV文件
-            with wave.open(temp_wav_path, "w") as wav_file:
-                wav_file.setnchannels(1)  # 单声道
-                wav_file.setsampwidth(2)  # 16位
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(audio_array.tobytes())
+                # 保存为WAV文件
+                with wave.open(temp_wav_path, "w") as wav_file:
+                    wav_file.setnchannels(1)  # 单声道
+                    wav_file.setsampwidth(2)  # 16位
+                    wav_file.setframerate(sample_rate)
+                    wav_file.writeframes(audio_array.tobytes())
 
-        elif isinstance(audio_data, bytes):
-            # 字节数据直接写入文件
-            with open(temp_wav_path, "wb") as f:
-                f.write(audio_data)
-        else:
-            raise AssessmentError(f"不支持的音频数据类型: {type(audio_data)}")
+            elif isinstance(audio_data, bytes):
+                # 字节数据直接写入文件
+                with open(temp_wav_path, "wb") as f:
+                    f.write(audio_data)
+            else:
+                raise AssessmentError(f"不支持的音频数据类型: {type(audio_data)}")
 
-        return temp_wav_path
+            return temp_wav_path
+        except BaseException:
+            self._cleanup_temp_file(temp_wav_path)
+            raise
 
     def _analyze_prosody_features(self, wav_file_path: str) -> ProsodyFeatures:
         """
@@ -261,13 +267,13 @@ class ProsodyAnalyzer(AssessmentBase):
 
     def _cleanup_temp_file(self, file_path: str) -> None:
         """
-        清理临时文件
+        清理调用方已确认由当前调用拥有的临时文件
 
         Args:
-            file_path: 文件路径
+            file_path: 当前调用拥有的文件路径
         """
         try:
-            if os.path.exists(file_path) and file_path.startswith(self.temp_dir):
+            if os.path.exists(file_path):
                 os.remove(file_path)
         except Exception as e:
             self.logger.warning(f"清理临时文件失败: {e}")
