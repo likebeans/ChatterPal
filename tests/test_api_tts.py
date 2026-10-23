@@ -12,7 +12,7 @@ import pytest
 
 from chatterpal.core.asr.base import ASRResult, ConfidenceLevel
 from chatterpal.core.tts.edge import EdgeTTS
-from chatterpal.services.chat import ChatService
+from chatterpal.services.chat import AudioChatResult, ChatService
 from chatterpal.web import api_server
 
 
@@ -428,10 +428,11 @@ def test_audio_chat_synthesis_keeps_api_loop_responsive(api, monkeypatch):
     )
     api.asr = None
     api.chat_service = Mock()
-    api.chat_service.chat_with_audio.side_effect = lambda **kwargs: (
-        "Hello",
-        api.tts.synthesize("Hello"),
-        "test-session",
+    api.chat_service.chat_with_audio_result.side_effect = lambda **kwargs: AudioChatResult(
+        recognized_text="Hello from the user",
+        response_text="Hello",
+        response_audio=api.tts.synthesize("Hello"),
+        session_id="test-session",
     )
 
     async def request():

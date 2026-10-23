@@ -8,7 +8,9 @@ from typing import Optional, Dict, Any, List, Union, Tuple
 import logging
 import uuid
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from threading import RLock
 
 from ..core.asr.base import ASRBase, ASRError
 from ..core.tts.base import TTSBase, TTSError
@@ -22,6 +24,16 @@ from .topic_generator import TopicGenerator, TopicGenerationError
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AudioChatResult:
+    """一次语音对话的识别文本、回复和会话信息。"""
+
+    recognized_text: str
+    response_text: str
+    response_audio: Optional[bytes]
+    session_id: str
 
 
 class ChatSession:
@@ -40,25 +52,30 @@ class ChatSession:
         self.created_at = datetime.now()
         self.last_activity = datetime.now()
         self.metadata = {}
+        self.lock = RLock()
 
     def add_user_message(self, content: str, **kwargs) -> None:
         """添加用户消息"""
-        self.conversation.add_user_message(content, **kwargs)
-        self.last_activity = datetime.now()
+        with self.lock:
+            self.conversation.add_user_message(content, **kwargs)
+            self.last_activity = datetime.now()
 
     def add_assistant_message(self, content: str, **kwargs) -> None:
         """添加助手消息"""
-        self.conversation.add_assistant_message(content, **kwargs)
-        self.last_activity = datetime.now()
+        with self.lock:
+            self.conversation.add_assistant_message(content, **kwargs)
+            self.last_activity = datetime.now()
 
     def get_messages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """获取消息列表"""
-        return self.conversation.get_messages(limit)
+        with self.lock:
+            return self.conversation.get_messages(limit)
 
     def clear_history(self, keep_system: bool = True) -> None:
         """清空对话历史"""
-        self.conversation.clear(keep_system)
-        self.last_activity = datetime.now()
+        with self.lock:
+            self.conversation.clear(keep_system)
+            self.last_activity = datetime.now()
 
     def set_metadata(self, key: str, value: Any) -> None:
         """设置元数据"""
@@ -249,26 +266,24 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
             session_id = self.create_session()
             session = self.get_session(session_id)
 
-        try:
-            # 添加用户消息
-            session.add_user_message(text)
+        # 同一会话按完整轮次更新历史；不同会话可以并行调用LLM。
+        with session.lock:
+            message_count = len(session.conversation.messages)
+            try:
+                session.add_user_message(text)
+                messages = session.get_messages(self.max_history_length)
+                response = self.llm.chat(messages, **kwargs)
+                session.add_assistant_message(response)
 
-            # 获取对话历史
-            messages = session.get_messages(self.max_history_length)
+                self.logger.info(f"文本对话完成 - 会话: {session_id}")
+                return response, session_id
 
-            # 调用LLM生成回复
-            response = self.llm.chat(messages, **kwargs)
-
-            # 添加助手回复
-            session.add_assistant_message(response)
-
-            self.logger.info(f"文本对话完成 - 会话: {session_id}")
-            return response, session_id
-
-        except Exception as e:
-            error_msg = safe_str(e)
-            self.logger.error(f"文本对话失败: {error_msg}")
-            raise LLMError(f"文本对话失败: {error_msg}")
+            except Exception as e:
+                # 失败的轮次不应留下未配对的用户消息，影响后续上下文。
+                del session.conversation.messages[message_count:]
+                error_msg = safe_str(e)
+                self.logger.error(f"文本对话失败: {error_msg}")
+                raise LLMError(f"文本对话失败: {error_msg}") from e
 
     def chat_with_audio(
         self,
@@ -278,8 +293,22 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         max_retries: int = 3,
         **kwargs,
     ) -> Tuple[str, Optional[bytes], str]:
+        """兼容原接口，返回(回复文本, 回复音频或None, 会话ID)。"""
+        result = self.chat_with_audio_result(
+            audio_data, session_id, return_audio, max_retries, **kwargs
+        )
+        return result.response_text, result.response_audio, result.session_id
+
+    def chat_with_audio_result(
+        self,
+        audio_data: Union[str, bytes, Tuple[int, Any]],
+        session_id: Optional[str] = None,
+        return_audio: bool = True,
+        max_retries: int = 3,
+        **kwargs,
+    ) -> AudioChatResult:
         """
-        语音对话（增强错误处理版本）
+        语音对话，复用同一次识别结果生成回复和界面显示文本。
 
         Args:
             audio_data: 音频数据（文件路径、字节数据或Gradio格式）
@@ -289,7 +318,7 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
             **kwargs: 其他参数
 
         Returns:
-            (回复文本, 回复音频字节数据或None, 会话ID)
+            包含识别文本、回复文本、回复音频和会话ID的结果
 
         Raises:
             AudioInputError: 音频输入错误
@@ -322,7 +351,12 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
             if return_audio and self.tts:
                 response_audio = self._synthesize_with_error_handling(response_text)
 
-            return response_text, response_audio, session_id
+            return AudioChatResult(
+                recognized_text=recognized_text,
+                response_text=response_text,
+                response_audio=response_audio,
+                session_id=session_id,
+            )
 
         except (AudioInputError, SpeechRecognitionError, LLMError, SpeechSynthesisError):
             # 重新抛出已知错误
@@ -465,8 +499,9 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
             return False
 
         # 清空现有对话并设置新的系统提示词
-        session.conversation = Conversation(system_prompt)
-        session.last_activity = datetime.now()
+        with session.lock:
+            session.conversation = Conversation(system_prompt)
+            session.last_activity = datetime.now()
 
         self.logger.info(f"设置系统提示词 - 会话: {session_id}")
         return True
@@ -690,27 +725,13 @@ Topics:"""
                 if audio is None:
                     raise error_handler.create_error("AUDIO_FORMAT_ERROR", message="语音输入模式下音频数据不能为空")
                 
-                # 使用增强的语音对话处理
-                response_text, audio_output, _ = self.chat_with_audio(
+                # 识别结果同时用于对话上下文和界面显示，避免重复识别。
+                result = self.chat_with_audio_result(
                     audio, session_id, return_audio=True, max_retries=3
                 )
-                
-                # 获取用户输入文本用于显示（从ASR结果中获取）
-                try:
-                    if hasattr(self.asr, 'recognize_with_error_handling'):
-                        asr_result = self.asr.recognize_with_error_handling(audio, max_retries=1)
-                        user_input = asr_result.text or "语音输入"
-                    else:
-                        # 回退到基本识别
-                        if isinstance(audio, str):
-                            user_input = self.asr.recognize_file(audio) if self.asr else "语音输入"
-                        elif isinstance(audio, bytes):
-                            user_input = self.asr.recognize(audio) if self.asr else "语音输入"
-                        else:
-                            user_input = self.asr.recognize_gradio_audio(audio) if self.asr else "语音输入"
-                except Exception as e:
-                    self.logger.warning(f"获取用户输入文本失败: {e}")
-                    user_input = "语音输入"
+                user_input = result.recognized_text
+                response_text = result.response_text
+                audio_output = result.response_audio
             
             # 检查是否需要主题相关的上下文增强
             current_topic = session.get_metadata("current_topic")

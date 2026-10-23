@@ -12,6 +12,8 @@
 ### 🛠️ 开发文档
 - [`project_architecture.md`](project_architecture.md) - 完整的项目架构设计和技术栈说明
 - [`development.md`](development.md) - 开发环境搭建和贡献指南
+- [`optimization_plan.md`](optimization_plan.md) - 基于实际代码的现状梳理、性能基线和分批优化计划
+- [`worktree_optimization_plan.md`](worktree_optimization_plan.md) - 多 worktree 任务分工、文件归属、验收标准与集成顺序
 - [`technical_implementation_summary.md`](technical_implementation_summary.md) - 技术实现总结
 
 ### 🔬 技术文档

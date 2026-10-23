@@ -217,7 +217,8 @@ class APIServer:
             """聊天接口"""
             try:
                 # 处理文本聊天
-                response_text, session_id = self.chat_service.chat_with_text(
+                response_text, session_id = await asyncio.to_thread(
+                    self.chat_service.chat_with_text,
                     text=request.message,
                     session_id=request.session_id
                 )
@@ -277,50 +278,37 @@ class APIServer:
                 
                 self.logger.info(f"音频文件已保存: {audio_filename}")
                 
-                # 首先进行语音识别获取用户输入文本
-                recognized_text = ""
-                if self.asr:
-                    try:
-                        if hasattr(self.asr, 'recognize_with_error_handling'):
-                            asr_result = self.asr.recognize_with_error_handling(str(audio_path))
-                            recognized_text = asr_result.text
-                        else:
-                            recognized_text = self.asr.recognize_file(str(audio_path))
-                    except Exception as e:
-                        self.logger.warning(f"语音识别失败: {e}")
-                        recognized_text = "语音识别失败"
-                
-                # 设置音色（在调用chat_with_audio之前）
+                # 设置音色（在调用语音对话服务之前）
                 if hasattr(self.tts, 'set_voice'):
                     self.tts.set_voice(voice)
                 
                 # 处理语音聊天获取AI回复（已包含TTS处理）
-                response_text, response_audio, session_id = await asyncio.to_thread(
-                    self.chat_service.chat_with_audio,
+                result = await asyncio.to_thread(
+                    self.chat_service.chat_with_audio_result,
                     audio_data=str(audio_path),
                     session_id=session_id,
                     return_audio=True
                 )
-                
-                # 生成响应音频URL（如果chat_with_audio返回了音频数据）
+
+                # 生成响应音频URL（如果返回了音频数据）
                 audio_url = None
-                if response_audio:
+                if result.response_audio:
                     try:
                         response_audio_filename = f"response_{uuid.uuid4().hex}.wav"
                         response_audio_path = self.temp_dir / response_audio_filename
                         
                         # 保存音频数据到文件
                         with open(response_audio_path, 'wb') as f:
-                            f.write(response_audio)
+                            f.write(result.response_audio)
                         audio_url = f"/api/audio/{response_audio_filename}"
                         
                     except Exception as e:
                         self.logger.warning(f"保存音频文件失败: {e}")
                 
                 return {
-                    "recognized_text": recognized_text,  # 用户语音识别结果
-                    "response": response_text,           # AI回复文本
-                    "session_id": session_id,
+                    "recognized_text": result.recognized_text,  # 用户语音识别结果
+                    "response": result.response_text,           # AI回复文本
+                    "session_id": result.session_id,
                     "audio_url": audio_url               # AI回复语音URL
                 }
                 
