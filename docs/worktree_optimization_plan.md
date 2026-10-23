@@ -1,18 +1,18 @@
 # ChatterPal 并行优化计划
 
-日期：2026-10-23。依据：`a90b85c` 和本地 `perf/chat-request-pipeline` 的已验证改动。本文供多个 worktree 的开发者或代理直接分工使用。
+日期：2026-10-23。初始调查基于 `a90b85c`；聊天基线现已提交为 `2f4fc30`。第一轮 A–E 已按顺序进入独立集成分支 `integrate/optimization-round-1`，集成修复为 `575164f`。联合验收已执行完毕，但后端仍有 36 项失败、覆盖率 73.76% 未达 80%；先修复验收阻塞，再开始后续优化。本文保留原任务范围与分工，实际结果及失败清单见 [`integration_round_1.md`](integration_round_1.md)。
 
 ## 推荐安排
 
 第一轮开 **5 个 worktree**，分别执行 A–E。先修正功能和资源问题，恢复测试能力；第二轮再处理 TTS、部署依赖和评分可信度。最后才拆分大类和扩大并发。
 
-当前聊天链路优化已完成本地验证：88 项针对性回归通过，独立复核未发现可确认回归；它仍未提交。新 worktree 只会包含基线提交里的文件，因此应先将这批改动保存为共同基线。
+聊天链路的 88 项针对性回归已复验通过，并保存为本地提交 `2f4fc30`。A–E 实际均从 `a90b85c` 创建；集成人先保存聊天基线，再按 E → C → A → B → D 合并，保留各任务独立提交。
 
-| 阶段 | 可同时进行的任务 | 进入条件 |
+| 阶段 | 可同时进行的任务 | 进入条件或实际状态 |
 | --- | --- | --- |
-| 准备 | 保存共同基线，创建 `optimize/base` | 当前聊天优化和计划文档进入同一个本地提交 |
-| 第一轮 | A 分析后端、B React、C ASR、D Gradio、E 测试 | 全部从同一个 `optimize/base` 创建 |
-| 集成 | 按 E → C → A → B → D 合并 | 每组交付测试、复现和未完成事项；A+B 联调 |
+| 准备 | 保存聊天基线 | 已完成：`2f4fc30`，含聊天优化、回归和计划文档 |
+| 第一轮 | A 分析后端、B React、C ASR、D Gradio、E 测试 | 五组独立提交均已完成，起点为 `a90b85c` |
+| 集成 | 聊天基线 → E → C → A → B → D | 已无冲突合入独立集成分支；联合验收另行记录 |
 | 第二轮 | 先 F TTS，再 H 打包部署 | 第一轮集成验收通过；两项可能共享导入与调用点，各自从更新后的集成提交创建新 worktree |
 | 第三轮 | G 评分可信度 | A、B、C、E、F 已合入；评分字段和页面需要一起调整 |
 | 第四轮 | I 运行资源与结构优化 | 正确性回归稳定，先测资源和延迟，再拆分与优化 |
@@ -274,44 +274,13 @@ POST /api/pronunciation/ai-analyze
 
 > 执行 I：先测资源增长和阶段延迟，先修生命周期，再逐步拆分职责。不要一次迁移数据库、引入队列或改所有公共接口。每一步保留可回滚边界与原有行为回归。
 
-## 创建 worktree 的准备步骤
+## worktree 与后续批次起点
 
-以下为供用户执行的命令，**本计划没有执行提交、创建分支或创建 worktree**。先检查当前 diff；如果已在其他提交保存基线，直接让 `optimize/base` 指向那个提交。
+第一轮工作区已存在，不能重复执行创建或清理命令。集成工作区为 `/Users/dd_y/Code/learn/ChatterPal-integration`，分支为 `integrate/optimization-round-1`。主工作区保留聊天基线提交；A、E 工作区中未提交的聊天副本仍属于各自工作区，集成只采用其任务提交。
 
-当前仓库尚未提交的已验证聊天改动与两份计划，可这样保存为本地基线：
+后续批次应从验收完成后的集成提交创建新 worktree。先检查 `git branch --list`、`git worktree list` 和各工作区状态；分支与目录已存在时复用或选择新名称，不清理其他会话的未提交内容。
 
-```bash
-git -C /Users/dd_y/Code/learn/ChatterPal diff --check
-
-git -C /Users/dd_y/Code/learn/ChatterPal add \
-  src/chatterpal/services/chat.py \
-  src/chatterpal/web/api_server.py \
-  tests/test_chat_pipeline.py \
-  tests/test_api_tts.py \
-  tests/test_aliyun_asr_concurrency.py \
-  docs/README.md \
-  docs/optimization_plan.md \
-  docs/worktree_optimization_plan.md
-
-git -C /Users/dd_y/Code/learn/ChatterPal commit \
-  -m "Optimize chat request pipeline and document parallel work"
-
-git -C /Users/dd_y/Code/learn/ChatterPal branch optimize/base HEAD
-```
-
-从共同提交创建第一轮 worktree：
-
-```bash
-git -C /Users/dd_y/Code/learn/ChatterPal worktree add -b fix/analysis-pipeline ../ChatterPal-analysis optimize/base
-git -C /Users/dd_y/Code/learn/ChatterPal worktree add -b fix/frontend-audio-state ../ChatterPal-frontend optimize/base
-git -C /Users/dd_y/Code/learn/ChatterPal worktree add -b perf/asr-runtime ../ChatterPal-asr optimize/base
-git -C /Users/dd_y/Code/learn/ChatterPal worktree add -b fix/gradio-session-state ../ChatterPal-gradio optimize/base
-git -C /Users/dd_y/Code/learn/ChatterPal worktree add -b test/restore-collection ../ChatterPal-tests optimize/base
-```
-
-这些命令假设上述分支名和目录未被使用；若已存在，先用 `git branch --list`、`git worktree list` 检查，再复用或选择新名称。
-
-每个 worktree 使用独立的 `.venv`、`node_modules`、临时音频目录和会话数据目录。优先只启动一套联调服务；其余 worktree 用离线测试。多套服务同时运行时分配不同端口，并相应设置代理和 CORS；当前 API 启动脚本固定 8010、Vite 代理固定指向 8010，单改前端端口并不能切换后端。
+运行时使用独立的 `node_modules`、临时音频和会话目录。Python 验收若复用现有虚拟环境，必须明确从集成工作区导入源码并核对依赖锁。多套服务同时运行时分配不同端口，并相应设置代理和 CORS；当前 API 启动脚本固定 8010、Vite 代理固定指向 8010，单改前端端口并不能切换后端。
 
 ## 集成与最终验收
 
