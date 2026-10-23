@@ -7,6 +7,12 @@ module.exports = {
   ignorePatterns: ['dist', '.eslintrc.cjs'],
   parser: '@typescript-eslint/parser',
   plugins: ['react-refresh'],
+  overrides: [
+    {
+      files: ['src/test/**'],
+      rules: { 'no-redeclare': 'off' },
+    },
+  ],
   rules: {
     'react-refresh/only-export-components': [
       'warn',
