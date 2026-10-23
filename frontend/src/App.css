@@ -78,6 +78,37 @@ body {
   align-items: flex-start;
 }
 
+.tab-panel {
+  width: 100%;
+  min-width: 0;
+  max-width: 800px;
+}
+
+#pronunciation-panel {
+  max-width: 900px;
+}
+
+.tab-panel[hidden] {
+  display: none;
+}
+
+button:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid #243c91;
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app *,
+  .app *::before,
+  .app *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* 聊天界面样式 */
 .chat-interface {
   width: 100%;

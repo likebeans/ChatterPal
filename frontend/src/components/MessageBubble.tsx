@@ -30,8 +30,10 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onPlayAudio, isP
             className={`audio-play-btn ${isPlaying ? 'playing' : ''}`}
             onClick={handlePlayAudio}
             disabled={!message.audio}
+            aria-label={`${isPlaying ? '暂停' : '播放'}${message.type === 'user' ? '用户录音' : '助手语音'}`}
+            aria-pressed={isPlaying}
           >
-            <div className="audio-icon">
+            <div className="audio-icon" aria-hidden="true">
               {isPlaying ? (
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
@@ -42,7 +44,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message, onPlayAudio, isP
                 </svg>
               )}
             </div>
-            <span className="audio-duration">0:02</span>
+            <span className="audio-duration">{isPlaying ? '暂停' : '播放语音'}</span>
           </button>
         </div>
       )}

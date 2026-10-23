@@ -13,12 +13,16 @@ function App() {
         <nav className="tab-nav">
           <button 
             className={`tab-button ${activeTab === 'chat' ? 'active' : ''}`}
+            aria-pressed={activeTab === 'chat'}
+            aria-controls="chat-panel"
             onClick={() => setActiveTab('chat')}
           >
             对话练习
           </button>
           <button 
             className={`tab-button ${activeTab === 'pronunciation' ? 'active' : ''}`}
+            aria-pressed={activeTab === 'pronunciation'}
+            aria-controls="pronunciation-panel"
             onClick={() => setActiveTab('pronunciation')}
           >
             口语纠正
@@ -27,8 +31,12 @@ function App() {
       </header>
       
       <main className="app-main">
-        {activeTab === 'chat' && <ChatInterface />}
-        {activeTab === 'pronunciation' && <PronunciationCorrection />}
+        <section id="chat-panel" className="tab-panel" hidden={activeTab !== 'chat'} aria-label="对话练习">
+          <ChatInterface active={activeTab === 'chat'} />
+        </section>
+        <section id="pronunciation-panel" className="tab-panel" hidden={activeTab !== 'pronunciation'} aria-label="口语纠正">
+          <PronunciationCorrection active={activeTab === 'pronunciation'} />
+        </section>
       </main>
     </div>
   )
