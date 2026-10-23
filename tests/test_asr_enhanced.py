@@ -232,8 +232,8 @@ class TestASREnhanced:
         # 过多标点符号
         assert self.asr._has_recognition_errors("文本...???")
         
-        # 过长英文字符串
-        assert self.asr._has_recognition_errors("abcdefghijklmnop")
+        # 英文单词的长度本身不代表识别错误。
+        assert not self.asr._has_recognition_errors("internationalization")
         
         # 过多数字
         assert self.asr._has_recognition_errors("12345678901234567890")

@@ -253,7 +253,11 @@ class ASRBase(ABC):
         import numpy as np
         import soundfile as sf
 
-        if isinstance(audio_data, bytes):
+        if isinstance(audio_data, np.ndarray):
+            # 保留增强识别扩展原有的数组校验入口，不把波形当作文件读取。
+            audio_array = audio_data.astype(np.float32)
+            decoded_rate = sample_rate or self.config.get("sample_rate", 16000)
+        elif isinstance(audio_data, bytes):
             try:
                 audio_array, decoded_rate = sf.read(io.BytesIO(audio_data), dtype="float32")
             except sf.LibsndfileError:

@@ -152,8 +152,9 @@ class TestConfigurationFunctions:
             assert validation['alibaba'] is True
             assert validation['openai'] is True
     
-    def test_validate_api_keys_missing(self):
-        """Test API key validation with missing keys."""
+    def test_validate_api_keys_missing(self, monkeypatch, tmp_path):
+        """Test API key validation with missing keys and isolated default directories."""
+        monkeypatch.chdir(tmp_path)
         with patch.dict(os.environ, {}, clear=True):
             # Force reload to clear any existing keys
             reload_settings()

@@ -132,15 +132,15 @@ class TestASRBase:
 
 
 class TestWhisperASR:
-    """Exercise the real SpeechRecognition adapter without loading Whisper."""
+    """Exercise the real adapter and WAV decoder at the cached-model boundary."""
 
     @pytest.fixture(autouse=True)
     def whisper_boundary(self):
-        with patch(
-            "chatterpal.core.asr.whisper.sr.Recognizer.recognize_whisper",
-            autospec=True,
-        ) as recognize:
-            self.recognize_whisper = recognize
+        with patch("whisper.load_model") as load, patch(
+            "torch.cuda.is_available", return_value=False
+        ):
+            self.load_model = load
+            self.transcribe = load.return_value.transcribe
             yield
 
     def test_initialization(self):
@@ -149,48 +149,48 @@ class TestWhisperASR:
         assert asr.config == config
         assert asr.model_size == "base"
         assert asr.language == "en"
-        self.recognize_whisper.assert_not_called()
+        self.load_model.assert_not_called()
 
     def test_recognize_file_success(self, wav_path):
-        from speech_recognition import AudioData
-
-        self.recognize_whisper.return_value = "Hello world"
+        self.transcribe.return_value = {"text": "Hello world"}
         asr = WhisperASR({"model_size": "base", "language": "en"})
         assert asr.recognize_file(wav_path) == "Hello world"
-        self.recognize_whisper.assert_called_once()
-        recognizer, audio_data = self.recognize_whisper.call_args.args
-        assert recognizer is asr.recognizer
-        assert isinstance(audio_data, AudioData)
-        assert audio_data.sample_rate == 16000
-        assert self.recognize_whisper.call_args.kwargs == {"model": "base", "language": "english"}
+        self.load_model.assert_called_once_with("base", device="cpu")
+        self.transcribe.assert_called_once()
+        waveform, = self.transcribe.call_args.args
+        expected, sample_rate = sf.read(wav_path, dtype="float32")
+        assert sample_rate == 16000
+        np.testing.assert_array_equal(waveform, expected)
+        assert waveform.dtype == np.float32
+        assert self.transcribe.call_args.kwargs == {"language": "english", "fp16": False}
         assert Path(wav_path).exists()
 
     def test_recognize_file_failure(self, wav_path):
         from speech_recognition import RequestError
 
-        self.recognize_whisper.side_effect = RequestError("Transcription failed")
+        self.transcribe.side_effect = RequestError("Transcription failed")
         asr = WhisperASR()
         with pytest.raises(ASRError, match="Transcription failed"):
             asr.recognize_file(wav_path)
-        self.recognize_whisper.assert_called_once()
+        self.transcribe.assert_called_once()
         assert Path(wav_path).exists()
 
     def test_recognize_bytes_data(self, wav_bytes, tmp_path, monkeypatch):
-        self.recognize_whisper.return_value = "Hello from bytes"
+        self.transcribe.return_value = {"text": "Hello from bytes"}
         monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
         asr = WhisperASR({"language": "en"})
         assert asr.recognize(wav_bytes) == "Hello from bytes"
-        self.recognize_whisper.assert_called_once()
+        self.transcribe.assert_called_once()
         assert list(tmp_path.iterdir()) == []
 
     def test_test_connection(self, tmp_path, monkeypatch):
         from speech_recognition import UnknownValueError
 
         # The silence probe should succeed when the model cannot transcribe it.
-        self.recognize_whisper.side_effect = UnknownValueError()
+        self.transcribe.side_effect = UnknownValueError()
         monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
         assert WhisperASR().test_connection() is True
-        self.recognize_whisper.assert_called_once()
+        self.transcribe.assert_called_once()
         assert list(tmp_path.iterdir()) == []
 
 

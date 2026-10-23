@@ -111,6 +111,7 @@ function PronunciationCorrection({ active = true }: { active?: boolean }) {
   }, [selectedScenario, scenarios, analysisMode, active, scenarioRetry])
 
   const changeScenario = (value: string) => {
+    if (value === selectedScenario) return
     invalidateAnalysis()
     recording.cancel()
     stopPlayback()

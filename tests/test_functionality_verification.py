@@ -55,8 +55,10 @@ def offline_runtime(monkeypatch, tmp_path):
         sample_rate=sample_rate,
         audio_array=audio_array,
     )
-    runtime.whisper = Mock(side_effect=lambda *args, **kwargs: runtime.recognized_text)
-    monkeypatch.setattr("speech_recognition.Recognizer.recognize_whisper", runtime.whisper)
+    runtime.whisper = Mock(side_effect=lambda *args, **kwargs: {"text": runtime.recognized_text})
+    monkeypatch.setattr(
+        "whisper.load_model", Mock(return_value=SimpleNamespace(transcribe=runtime.whisper))
+    )
 
     def complete(**kwargs):
         return SimpleNamespace(
@@ -380,7 +382,7 @@ class TestEndToEndWorkflow:
             chat_service.chat_with_text("Hello")
 
         # ChatService explicitly retains the text response when TTS fails.
-        runtime.whisper.side_effect = lambda *args, **kwargs: runtime.recognized_text
+        runtime.whisper.side_effect = lambda *args, **kwargs: {"text": runtime.recognized_text}
         runtime.completion.side_effect = None
         runtime.completion.return_value = SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=runtime.reply))],

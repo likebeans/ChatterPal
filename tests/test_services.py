@@ -23,7 +23,7 @@ from chatterpal.services.evaluation import EvaluationService
 @pytest.fixture
 def service_components(monkeypatch, tmp_path, setup_test_environment):
     """Keep real adapters and replace only model/cloud SDK entry points."""
-    from chatterpal.core.asr import whisper as whisper_module
+    import whisper
     from chatterpal.core.assessment import prosody as prosody_module
     from chatterpal.core.llm import alibaba as llm_module
     from chatterpal.core.tts import edge as tts_module
@@ -41,8 +41,10 @@ def service_components(monkeypatch, tmp_path, setup_test_environment):
     audio_path = tmp_path / "speech.wav"
     audio_path.write_bytes(audio_bytes)
 
-    asr_sdk = Mock(return_value="Hello, how are you today")
-    monkeypatch.setattr(whisper_module.sr.Recognizer, "recognize_whisper", asr_sdk)
+    asr_sdk = Mock(return_value={"text": "Hello, how are you today"})
+    monkeypatch.setattr(
+        whisper, "load_model", Mock(return_value=SimpleNamespace(transcribe=asr_sdk))
+    )
 
     async def save_audio(path):
         with open(path, "wb") as output:

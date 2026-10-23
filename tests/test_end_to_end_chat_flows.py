@@ -27,7 +27,7 @@ class TestEndToEndChatFlows:
     @pytest.fixture(autouse=True)
     def setup_components(self, monkeypatch, tmp_path, setup_test_environment):
         """Replace external SDK calls while retaining provider error handling."""
-        from chatterpal.core.asr import whisper as asr_module
+        import whisper
         from chatterpal.core.llm import alibaba as llm_module
         from chatterpal.core.tts import edge as tts_module
 
@@ -43,8 +43,10 @@ class TestEndToEndChatFlows:
         audio_path.write_bytes(self.audio_bytes)
         self.audio_path = str(audio_path)
 
-        self.asr_sdk = Mock(return_value=RECOGNIZED_TEXT)
-        monkeypatch.setattr(asr_module.sr.Recognizer, "recognize_whisper", self.asr_sdk)
+        self.asr_sdk = Mock(return_value={"text": RECOGNIZED_TEXT})
+        monkeypatch.setattr(
+            whisper, "load_model", Mock(return_value=SimpleNamespace(transcribe=self.asr_sdk))
+        )
 
         async def save_audio(path):
             with open(path, "wb") as output:

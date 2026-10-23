@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import axios from 'axios'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
@@ -83,6 +84,24 @@ describe('pronunciation API contracts and recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: '应用此场景' }))
     expect(screen.getByLabelText('练习场景（可选）')).toHaveValue('daily_conversation-intermediate')
     expect(screen.queryByText(aiResult.recognized_text, { selector: 'p' })).not.toBeInTheDocument()
+  })
+
+  it('preserves the current scenario context and completed analysis when its recommendation is applied again', async () => {
+    const user = userEvent.setup()
+    const currentResult = { ...aiResult, next_scenario: 'daily_conversation-beginner' }
+    vi.spyOn(axios, 'post').mockResolvedValue({ data: currentResult })
+    render(<PronunciationCorrection />)
+    await prepareAI()
+    await screen.findByText('Current scenario')
+    analyze()
+    await screen.findByText(currentResult.recognized_text, { selector: 'p' })
+
+    await user.click(screen.getByRole('button', { name: '应用此场景' }))
+
+    expect(screen.getByLabelText('练习场景（可选）')).toHaveValue('daily_conversation-beginner')
+    expect(screen.getByText('Current scenario')).toBeVisible()
+    expect(screen.getByText(currentResult.recognized_text, { selector: 'p' })).toBeVisible()
+    expect(screen.getByText(currentResult.detailed_analysis)).toBeVisible()
   })
 
   it('reports incomplete API data and permits retry with the same recording', async () => {

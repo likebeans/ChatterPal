@@ -111,6 +111,32 @@ def pytest_configure(config):
     patcher.setattr(socket.socket, "connect", guarded_connect)
     patcher.setattr(socket.socket, "connect_ex", guarded_connect_ex)
 
+    # A loopback proxy can forward to external hosts. Check urllib's target
+    # before opening it, including requests opened after an HTTP redirect.
+    import urllib.request
+    from urllib.parse import urlsplit
+
+    original_urlopen = urllib.request.urlopen
+    original_open = urllib.request.OpenerDirector.open
+
+    def check_url(target):
+        url = getattr(target, "full_url", target)
+        if isinstance(url, (str, bytes)):
+            host = urlsplit(url).hostname
+            if host is not None:
+                check_host(host)
+
+    def guarded_urlopen(url, *args, **kwargs):
+        check_url(url)
+        return original_urlopen(url, *args, **kwargs)
+
+    def guarded_open(opener, fullurl, *args, **kwargs):
+        check_url(fullurl)
+        return original_open(opener, fullurl, *args, **kwargs)
+
+    patcher.setattr(urllib.request, "urlopen", guarded_urlopen)
+    patcher.setattr(urllib.request.OpenerDirector, "open", guarded_open)
+
     import pyaudio
     import speech_recognition
 
@@ -127,6 +153,16 @@ def pytest_configure(config):
         guard_resource(
             "model", speech_recognition.Recognizer.recognize_whisper,
             "Real Whisper inference is disabled. Mock the recognizer boundary, "
+            "or mark the test model and use --run-models.",
+        ),
+    )
+    import whisper
+
+    patcher.setattr(
+        whisper, "load_model",
+        guard_resource(
+            "model", whisper.load_model,
+            "Real Whisper model loading is disabled. Mock whisper.load_model, "
             "or mark the test model and use --run-models.",
         ),
     )

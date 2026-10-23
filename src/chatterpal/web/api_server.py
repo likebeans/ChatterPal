@@ -491,11 +491,18 @@ class APIServer:
         ):
             """获取特定场景信息"""
             try:
+                try:
+                    scenario = ScenarioType(scenario_type)
+                    difficulty = DifficultyLevel(difficulty_level)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail="无效的场景或难度") from e
                 scenario_context = self.ai_correction_service.get_scenario_context(
-                    scenario_type=ScenarioType(scenario_type),
-                    difficulty_level=DifficultyLevel(difficulty_level)
+                    scenario_type=scenario,
+                    difficulty_level=difficulty
                 )
-                
+                if scenario_context is None:
+                    raise HTTPException(status_code=404, detail="该场景与难度的练习内容尚未提供")
+
                 return ScenarioResponse(
                     scenario_type=scenario_context.scenario_type.value,
                     difficulty_level=scenario_context.difficulty_level.value,
@@ -506,6 +513,8 @@ class APIServer:
                     pronunciation_targets=scenario_context.pronunciation_targets
                 )
                 
+            except HTTPException:
+                raise
             except Exception as e:
                 self.logger.error(f"获取场景信息失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
@@ -519,6 +528,10 @@ class APIServer:
                 scenarios = []
                 for scenario_type in ScenarioType:
                     for difficulty_level in DifficultyLevel:
+                        if self.ai_correction_service.get_scenario_context(
+                            scenario_type, difficulty_level
+                        ) is None:
+                            continue
                         scenarios.append({
                             "scenario_type": scenario_type.value,
                             "difficulty_level": difficulty_level.value,

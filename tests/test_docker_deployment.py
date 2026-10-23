@@ -32,9 +32,14 @@ class TestDockerDeployment(unittest.TestCase):
     def test_frontend_requests_use_same_origin(self):
         # An absolute localhost URL targets the visitor's computer after deploy.
         requests = []
-        for source in (PROJECT_ROOT / "frontend/src").rglob("*.tsx"):
+        for source in (PROJECT_ROOT / "frontend/src").rglob("*"):
+            if source.suffix not in {".ts", ".tsx"} or "test" in source.parts:
+                continue
             requests.extend(
-                re.findall(r"axios\.(?:get|post)\(['\"`]([^'\"`]+)", source.read_text())
+                re.findall(
+                    r"axios\.(?:get|post)(?:<[^;\n]+?>)?\(['\"`]([^'\"`]+)",
+                    source.read_text(),
+                )
             )
         self.assertTrue(requests, "No frontend API requests were checked")
         for url in requests:

@@ -22,12 +22,22 @@ def harness_pytester(pytester):
         import pyaudio
         import pytest
         import speech_recognition
+        import whisper as whisper_runtime
+        import urllib.request
 
         calls = []
 
         def whisper(self, audio, **kwargs):
             calls.append(("model", audio, kwargs))
             return "safe inference"
+
+        def load_model(name, **kwargs):
+            calls.append(("model_load", name, kwargs))
+            return "safe model"
+
+        def open_url(request, *args, **kwargs):
+            calls.append(("url", getattr(request, "full_url", request)))
+            return "safe response"
 
         def initialize(self):
             calls.append(("device_init",))
@@ -42,6 +52,8 @@ def harness_pytester(pytester):
 
         patcher = pytest.MonkeyPatch()
         patcher.setattr(speech_recognition.Recognizer, "recognize_whisper", whisper)
+        patcher.setattr(whisper_runtime, "load_model", load_model)
+        patcher.setattr(urllib.request, "urlopen", open_url)
         patcher.setattr(pyaudio.PyAudio, "__init__", initialize)
         patcher.setattr(pyaudio.PyAudio, "open", open_stream)
         patcher.setattr(pyaudio.PyAudio, "get_device_count", device_count)
@@ -180,6 +192,86 @@ def test_unmarked_model_and_device_work_fails_before_execution():
         speech_recognition.Recognizer().recognize_whisper(None)
     with pytest.raises(pytest.fail.Exception, match="Audio hardware"):
         pyaudio.PyAudio.open(None)
+
+
+@pytest.mark.parametrize("as_request", [False, True])
+def test_external_url_is_blocked_before_a_loopback_proxy(harness_pytester, as_request):
+    pytester = harness_pytester
+    pytester.makepyfile(
+        f'''
+        import pytest
+        import urllib.request
+        import safe_boundaries
+
+        def test_target_is_blocked(monkeypatch):
+            monkeypatch.setenv("https_proxy", "http://127.0.0.1:9")
+            url = "https://external.example.test/model.pt"
+            target = urllib.request.Request(url) if {as_request!r} else url
+            with pytest.raises(pytest.fail.Exception, match="External network access"):
+                urllib.request.urlopen(target)
+            assert safe_boundaries.calls == []
+        '''
+    )
+    pytester.runpytest_subprocess("-o", "addopts=", "-q").assert_outcomes(passed=1)
+
+
+def test_external_url_explicit_opt_in_remains_available(harness_pytester):
+    pytester = harness_pytester
+    pytester.makepyfile(
+        '''
+        import pytest
+        import urllib.request
+        import safe_boundaries
+
+        @pytest.mark.external_api
+        def test_allowed_target():
+            url = "https://external.example.test/model.pt"
+            assert urllib.request.urlopen(url) == "safe response"
+            assert safe_boundaries.calls == [("url", url)]
+        '''
+    )
+    pytester.runpytest_subprocess("-o", "addopts=", "-q").assert_outcomes(skipped=1)
+    pytester.runpytest_subprocess(
+        "-o", "addopts=", "-q", "--run-external"
+    ).assert_outcomes(passed=1)
+
+
+@pytest.mark.parametrize("stage", ["collection", "test"])
+def test_direct_whisper_loader_requires_model_opt_in(harness_pytester, stage):
+    pytester = harness_pytester
+    check = '''
+with pytest.raises(pytest.fail.Exception, match="Real Whisper model loading"):
+    whisper.load_model("tiny", device="cpu")
+assert safe_boundaries.calls == []
+'''
+    imports = "import pytest\nimport whisper\nimport safe_boundaries\n"
+    body = check + "\ndef test_collected():\n    pass\n" if stage == "collection" else (
+        "def test_loader_blocked():\n" + textwrap.indent(check, "    ")
+    )
+    pytester.makepyfile(imports + body)
+    # Even an enabled CLI flag does not authorize unmarked tests or collection.
+    result = pytester.runpytest_subprocess("-o", "addopts=", "-q", "--run-models")
+    result.assert_outcomes(passed=1)
+
+
+def test_direct_whisper_loader_allows_explicit_model_opt_in(harness_pytester):
+    pytester = harness_pytester
+    pytester.makepyfile(
+        '''
+        import pytest
+        import whisper
+        import safe_boundaries
+
+        @pytest.mark.model
+        def test_model_loader():
+            assert whisper.load_model("tiny", device="cpu") == "safe model"
+            assert safe_boundaries.calls == [("model_load", "tiny", {"device": "cpu"})]
+        '''
+    )
+    pytester.runpytest_subprocess("-o", "addopts=", "-q").assert_outcomes(skipped=1)
+    pytester.runpytest_subprocess(
+        "-o", "addopts=", "-q", "--run-models"
+    ).assert_outcomes(passed=1)
 
 
 def test_collection_cannot_access_external_network(harness_pytester):
@@ -338,7 +430,10 @@ def test_authorized_model_keeps_configuration_and_cache(harness_pytester, monkey
             received = []
             monkeypatch.setattr(whisper_module, "WhisperASR", received.append)
             create_asr(settings)
-            assert received == [{"model_size": "tiny", "device": "cpu"}]
+            assert received == [{
+                "model_size": "tiny", "device": "cpu", "language": "en",
+                "max_cached_models": 1,
+            }]
 
         def test_offline_defaults_after_model():
             settings = get_settings()

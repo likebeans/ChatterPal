@@ -101,6 +101,55 @@ def test_analysis_http_returns_transcript_and_keeps_existing_fields(
     assert not list(analysis_api.temp_dir.iterdir())
 
 
+def test_every_listed_scenario_has_a_usable_context(analysis_api):
+    async def request():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=analysis_api.app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/scenarios")
+            assert response.status_code == 200
+            scenarios = response.json()
+            expected = {
+                (kind.value, level.value)
+                for kind, levels in analysis_api.ai_correction_service.scenarios.items()
+                for level in levels
+            }
+            assert {
+                (item["scenario_type"], item["difficulty_level"]) for item in scenarios
+            } == expected
+            for item in scenarios:
+                context = await client.get(
+                    f"/api/scenarios/{item['scenario_type']}/{item['difficulty_level']}"
+                )
+                assert context.status_code == 200, context.text
+                assert context.json()["context_description"]
+
+    asyncio.run(request())
+
+
+@pytest.mark.parametrize(
+    ("scenario", "difficulty", "status"),
+    [
+        ("travel_situation", "beginner", 404),
+        ("daily_conversation", "advanced", 404),
+        ("invalid", "beginner", 422),
+        ("daily_conversation", "invalid", 422),
+    ],
+)
+def test_unavailable_scenario_has_an_explanatory_response(
+    analysis_api, scenario, difficulty, status
+):
+    async def request():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=analysis_api.app), base_url="http://test"
+        ) as client:
+            response = await client.get(f"/api/scenarios/{scenario}/{difficulty}")
+            assert response.status_code == status, response.text
+            assert response.json()["detail"]
+
+    asyncio.run(request())
+
+
 def test_successful_ai_http_maps_feedback_and_a_usable_next_scenario(analysis_api):
     prompts = []
 
