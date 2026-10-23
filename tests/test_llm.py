@@ -3,7 +3,7 @@ Tests for LLM (Large Language Model) modules.
 """
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 
 from chatterpal.core.llm.base import (
     LLMBase, LLMError, Message, Conversation
@@ -359,148 +359,144 @@ class TestLLMBase:
 
 
 class TestAlibabaDashScopeLLM:
-    """测试阿里云DashScope LLM实现"""
-    
+    """Test the legacy alias through the current OpenAI-compatible SDK boundary."""
+
+    @pytest.fixture(autouse=True)
+    def sdk_client(self, monkeypatch):
+        monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+        with patch("chatterpal.core.llm.alibaba.OpenAI") as constructor:
+            self.client = constructor.return_value
+            self.create = self.client.chat.completions.create
+            yield
+
     def test_initialization(self):
-        """测试阿里云LLM初始""
-        config = {
-            "api_key": "test_key",
-            "model": "qwen-turbo"
-        }
+        """Test Alibaba LLM initialization."""
+        config = {"api_key": "test_key", "model": "qwen-turbo"}
         llm = AlibabaDashScopeLLM(config)
         assert llm.config == config
         assert llm.api_key == "test_key"
         assert llm.model == "qwen-turbo"
-    
+        assert llm.client is self.client
+
     def test_initialization_missing_api_key(self):
-        """测试缺少API密钥时的初始""
-        with pytest.raises(LLMError, match="阿里云API密钥未配):
+        """Test missing credentials independently of the developer environment."""
+        with pytest.raises(LLMError, match="阿里百炼API密钥未配置"):
             AlibabaDashScopeLLM({})
-    
-    @patch('requests.post')
-    def test_chat_success(self, mock_post):
-        """测试成功的对""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "output": {
-                "text": "你好!我可以帮助你什么?"
-            }
-        }
-        mock_post.return_value = mock_response
-        
-        config = {"api_key": "test_key"}
-        llm = AlibabaDashScopeLLM(config)
-        
-        result = llm.chat("你好")
-        assert result == "你好!我可以帮助你什么?"
-    
-    @patch('requests.post')
-    def test_chat_failure(self, mock_post):
-        """测试对话失败"""
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.json.return_value = {
-            "message": "API错误"
-        }
-        mock_post.return_value = mock_response
-        
-        config = {"api_key": "test_key"}
-        llm = AlibabaDashScopeLLM(config)
-        
-        with pytest.raises(LLMError):
+
+    def test_chat_success(self):
+        """Test a successful reply using the SDK's choices/message shape."""
+        from types import SimpleNamespace
+
+        self.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="你好!我可以帮助你什么?"))],
+            usage=None,
+        )
+        llm = AlibabaDashScopeLLM({"api_key": "test_key"})
+
+        assert llm.chat("你好") == "你好!我可以帮助你什么?"
+        self.create.assert_called_once_with(
+            model="qwen-plus",
+            messages=[{"role": "user", "content": "你好"}],
+            max_tokens=2000,
+            temperature=0.7,
+            top_p=0.8,
+        )
+
+    def test_chat_failure(self):
+        """Test SDK failure conversion to LLMError."""
+        self.create.side_effect = RuntimeError("API错误")
+        llm = AlibabaDashScopeLLM({"api_key": "test_key"})
+
+        with pytest.raises(LLMError, match="API错误"):
             llm.chat("你好")
-    
-    @patch('requests.post')
-    def test_chat_with_conversation(self, mock_post):
-        """测试使用对话对象进行对话"""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "output": {
-                "text": "回复内容"
-            }
-        }
-        mock_post.return_value = mock_response
-        
-        config = {"api_key": "test_key"}
-        llm = AlibabaDashScopeLLM(config)
-        
+        self.create.assert_called_once()
+
+    def test_chat_with_conversation(self):
+        """Test conversation normalization before the SDK request."""
+        from types import SimpleNamespace
+
+        self.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="回复内容"))],
+            usage=None,
+        )
+        llm = AlibabaDashScopeLLM({"api_key": "test_key"})
         conv = Conversation("你是一个有用的助手")
         conv.add_user_message("你好")
-        
-        result = llm.chat(conv)
-        assert result == "回复内容"
+
+        assert llm.chat(conv) == "回复内容"
+        assert self.create.call_args.kwargs["messages"] == conv.get_messages()
 
 
 class TestOpenAILLM:
-    """Test the OpenAI LLM implementation."""
-    
+    """Test the OpenAI provider's actual HTTP boundary."""
+
     def test_initialization(self):
         """Test OpenAI LLM initialization."""
-        config = {
-            "api_key": "test_key",
-            "model": "gpt-3.5-turbo"
-        }
+        config = {"api_key": "test_key", "model": "gpt-3.5-turbo"}
         llm = OpenAILLM(config)
         assert llm.config == config
-    
+
     def test_initialization_missing_api_key(self):
         """Test OpenAI LLM initialization with missing API key."""
-        with pytest.raises(LLMError, match="缺少必要的API密钥"):
+        with pytest.raises(LLMError, match="OpenAI API密钥未配置"):
             OpenAILLM({})
-    
-    @patch('openai.OpenAI')
-    def test_chat_success(self, mock_openai_class):
-        """Test successful chat with OpenAI LLM."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.choices[0].message.content = "Hello! How can I help"
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_openai_class.return_value = mock_client
-        
-        config = {"api_key": "test_key"}
-        llm = OpenAILLM(config)
-        
-        result = llm.chat("Hello")
-        assert result == "Hello! How can I help"
-    
-    @patch('openai.OpenAI')
-    def test_chat_failure(self, mock_openai_class):
-        """Test chat failure with OpenAI LLM."""
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception("API Error")
-        mock_openai_class.return_value = mock_client
-        
-        config = {"api_key": "test_key"}
-        llm = OpenAILLM(config)
-        
-        with pytest.raises(LLMError):
+
+    @patch("chatterpal.core.llm.openai.requests.post")
+    def test_chat_success(self, mock_post):
+        """Test HTTP response parsing and request construction."""
+        mock_post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "Hello! How can I help"}}]
+        }
+        llm = OpenAILLM({"api_key": "test_key"})
+
+        assert llm.chat("Hello") == "Hello! How can I help"
+        mock_post.return_value.raise_for_status.assert_called_once_with()
+        mock_post.assert_called_once_with(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": "Bearer test_key", "Content-Type": "application/json"},
+            json={
+                "model": "gpt-3.5-turbo",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "max_tokens": 2000,
+                "temperature": 0.7,
+                "top_p": 1.0,
+                "frequency_penalty": 0.0,
+                "presence_penalty": 0.0,
+            },
+            timeout=30,
+        )
+
+    @patch("chatterpal.core.llm.openai.requests.post")
+    def test_chat_failure(self, mock_post):
+        """Test HTTP failures are reported as LLMError."""
+        from requests.exceptions import HTTPError
+
+        mock_post.return_value.raise_for_status.side_effect = HTTPError("API Error")
+        llm = OpenAILLM({"api_key": "test_key"})
+
+        with pytest.raises(LLMError, match="API Error"):
             llm.chat("Hello")
-    
-    @patch('openai.OpenAI')
-    def test_chat_stream_success(self, mock_openai_class):
-        """Test successful streaming chat with OpenAI LLM."""
-        mock_client = MagicMock()
-        
-        # Mock streaming response
-        mock_chunk1 = MagicMock()
-        mock_chunk1.choices[0].delta.content = "Hello"
-        mock_chunk2 = MagicMock()
-        mock_chunk2.choices[0].delta.content = " world"
-        mock_chunk3 = MagicMock()
-        mock_chunk3.choices[0].delta.content = None  # End of stream
-        
-        mock_client.chat.completions.create.return_value = [
-            mock_chunk1, mock_chunk2, mock_chunk3
+        mock_post.return_value.json.assert_not_called()
+
+    @patch("chatterpal.core.llm.openai.requests.post")
+    def test_chat_stream_success(self, mock_post):
+        """Test SSE chunks, empty deltas, and the stream terminator."""
+        mock_post.return_value.iter_lines.return_value = [
+            b'data: {"choices": [{"delta": {"content": "Hello"}}]}',
+            b'data: {"choices": [{"delta": {"content": " world"}}]}',
+            b'data: {"choices": [{"delta": {"content": null}}]}',
+            b'data: [DONE]',
+            b'data: {"choices": [{"delta": {"content": "ignored"}}]}',
         ]
-        mock_openai_class.return_value = mock_client
-        
-        config = {"api_key": "test_key"}
-        llm = OpenAILLM(config)
-        
-        result = list(llm.chat_stream("Hello"))
-        assert result == ["Hello", " world"]
+        llm = OpenAILLM({"api_key": "test_key"})
+
+        assert list(llm.chat_stream("Hello")) == ["Hello", " world"]
+        mock_post.return_value.raise_for_status.assert_called_once_with()
+        assert mock_post.call_args.kwargs["stream"] is True
+        assert mock_post.call_args.kwargs["json"]["stream"] is True
+        assert mock_post.call_args.kwargs["json"]["messages"] == [
+            {"role": "user", "content": "Hello"}
+        ]
 
 
 if __name__ == "__main__":

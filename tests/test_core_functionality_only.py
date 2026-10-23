@@ -1,293 +1,180 @@
-﻿"""
-核心功能测试 - 只测试可以正常工作的核心功能
-跳过需要外部依赖的测试
-"""
+﻿"""Core functionality checks using real services and offline SDK responses."""
+
+from pathlib import Path
 
 import pytest
-import tempfile
-import os
-import numpy as np
-from unittest.mock import Mock, patch
+
+from tests.test_functionality_verification import offline_runtime
+
 
 def test_core_modules_import():
-    """测试核心模块可以导入"""
-    try:
-        from chatterpal.core.asr.base import ASRBase
-        from chatterpal.core.tts.base import TTSBase
-        from chatterpal.core.llm.base import LLMBase
-        from chatterpal.core.assessment.base import AssessmentBase
-        from chatterpal.services.chat import ChatService
-        from chatterpal.services.evaluation import EvaluationService
-        from chatterpal.services.correction import CorrectionService
-        from chatterpal.config.settings import Settings
-        
-        print("所有核心模块导入成)
-        assert True
-    except Exception as e:
-        pytest.fail(f"核心模块导入失败: {e}")
+    """Core classes must import without initializing external runtimes."""
+    from chatterpal.core.asr.base import ASRBase
+    from chatterpal.core.tts.base import TTSBase
+    from chatterpal.core.llm.base import LLMBase
+    from chatterpal.core.assessment.base import AssessmentBase
+    from chatterpal.services.chat import ChatService
+    from chatterpal.services.evaluation import EvaluationService
+    from chatterpal.services.correction import CorrectionService
+    from chatterpal.config.settings import Settings
 
-def test_app_can_be_imported():
-    """测试应用可以导入"""
-    try:
-        import os
-        # 设置测试环境变量
-        os.environ['ALIBABA_API_KEY'] = 'test_key'
-        
-        from chatterpal.web.app import create_app
-        app = create_app()
-        assert app is not None
-        print("应用导入和创建成)
-        
-        # 清理环境变量
-        if 'ALIBABA_API_KEY' in os.environ:
-            del os.environ['ALIBABA_API_KEY']
-            
-    except Exception as e:
-        pytest.fail(f"应用导入失败: {e}")
+    for component in (
+        ASRBase, TTSBase, LLMBase, AssessmentBase, ChatService,
+        EvaluationService, CorrectionService, Settings,
+    ):
+        assert isinstance(component, type)
 
-def test_chat_service_basic():
-    """测试聊天服务基本功能"""
-    try:
-        from chatterpal.services.chat import ChatService
-        from unittest.mock import Mock
-        
-        # 创建模拟组件
-        mock_asr = Mock()
-        mock_asr.recognize.return_value = "Hello world"
-        mock_asr.recognize_file.return_value = "Hello world"
-        mock_asr.recognize_gradio_audio.return_value = "Hello world"
-        
-        mock_tts = Mock()
-        mock_tts.synthesize.return_value = b"fake audio"
-        
-        mock_llm = Mock()
-        mock_llm.chat.return_value = "Hi there!"
-        
-        # 创建服务
-        chat_service = ChatService(
-            asr=mock_asr,
-            tts=mock_tts,
-            llm=mock_llm
-        )
-        
-        # 测试文本对话
-        response_text, session_id = chat_service.chat_with_text("Hello")
-        assert response_text == "Hi there!"
-        assert session_id is not None
-        
-        print("聊天服务基本功能正常")
-    except Exception as e:
-        pytest.fail(f"聊天服务测试失败: {e}")
 
-def test_evaluation_service_basic():
-    """测试评估服务基本功能"""
-    try:
-        from chatterpal.services.evaluation import EvaluationService
-        from chatterpal.core.assessment.base import AssessmentResult
-        from unittest.mock import Mock
-        
-        # 创建模拟组件
-        mock_asr = Mock()
-        mock_asr.recognize.return_value = "Hello world"
-        
-        mock_llm = Mock()
-        mock_llm.chat.return_value = "Good pronunciation!"
-        
-        # 创建服务
-        eval_service = EvaluationService(
-            asr=mock_asr,
-            llm=mock_llm
-        )
-        
-        # 测试发音评估
-        result = eval_service.evaluate_pronunciation(
-            b"audio data", "Hello world"
-        )
-        
-        assert isinstance(result, AssessmentResult)
-        assert result.overall_score >= 0
-        
-        print("评估服务基本功能正常")
-    except Exception as e:
-        pytest.fail(f"评估服务测试失败: {e}")
+def test_app_can_be_imported(offline_runtime):
+    """Create the real application with explicit settings and SDK boundaries."""
+    from chatterpal.web.app import ChatterPalApp, create_app
+    from chatterpal.services.chat import ChatService
+    from chatterpal.services.evaluation import EvaluationService
+    from chatterpal.services.correction import CorrectionService
 
-def test_correction_service_basic():
-    """测试纠错服务基本功能"""
-    try:
-        from chatterpal.services.correction import CorrectionService
-        from unittest.mock import Mock
-        
-        # 创建模拟组件
-        mock_asr = Mock()
-        mock_asr.recognize.return_value = "Hello world"
-        
-        # 创建服务
-        correction_service = CorrectionService(asr=mock_asr)
-        
-        # 测试快速纠错
-        result = correction_service.quick_correction(
-            b"audio data", "Hello world"
-        )
-        
-        assert isinstance(result, dict)
-        assert "overall_score" in result
-        
-        print("纠错服务基本功能正常")
-    except Exception as e:
-        pytest.fail(f"纠错服务测试失败: {e}")
+    app = create_app(offline_runtime.settings)
+    assert app is not None
+    assert isinstance(app, ChatterPalApp)
+    assert isinstance(app.chat_service, ChatService)
+    assert isinstance(app.evaluation_service, EvaluationService)
+    assert isinstance(app.correction_service, CorrectionService)
+    assert app.chat_service.asr is app.asr
+    assert app.chat_service.tts is app.tts
+    assert app.chat_service.llm is app.llm
 
-def test_configuration_system():
-    """测试配置值系统"""
-    try:
-        from chatterpal.config.settings import Settings
-        
-        settings = Settings()
-        
-        # 验证基本配置属
-        assert hasattr(settings, 'audio_sample_rate')
-        assert hasattr(settings, 'whisper_model')
-        assert hasattr(settings, 'asr_provider')
-        assert hasattr(settings, 'tts_provider')
-        assert hasattr(settings, 'llm_provider')
-        
-        # 验证配置
-        assert settings.audio_sample_rate > 0
-        assert settings.whisper_model in ["tiny", "base", "small", "medium", "large"]
-        
-        print("配置系统正常工作")
-    except Exception as e:
-        pytest.fail(f"配置系统测试失败: {e}")
 
-def test_asr_base_functionality():
-    """测试ASR基础功能"""
-    try:
-        from chatterpal.core.asr.base import ASRBase
-        
-        class TestASR(ASRBase):
-            def recognize(self, audio_data, **kwargs):
-                return "测试识别结果"
-            
-            def recognize_file(self, audio_path, **kwargs):
-                return "文件识别结果"
-        
-        asr = TestASR({})
-        
-        # 测试基本功能
-        result = asr.recognize(b"audio data")
-        assert result == "测试识别结果"
-        
-        # 测试连接测试
-        assert asr.test_connection() is True
-        
-        print("ASR基础功能正常")
-    except Exception as e:
-        pytest.fail(f"ASR基础功能测试失败: {e}")
+def test_chat_service_basic(offline_runtime):
+    """A text turn must return the provider reply and create a session."""
+    from chatterpal.services.chat import ChatService
+
+    runtime = offline_runtime
+    runtime.reply = "Hi there!"
+    service = ChatService(asr=runtime.asr, tts=runtime.tts, llm=runtime.llm)
+    response_text, session_id = service.chat_with_text("Hello")
+    assert response_text == "Hi there!"
+    assert session_id is not None
+    assert runtime.completion.call_args.kwargs["messages"][-1] == {
+        "role": "user", "content": "Hello"
+    }
+
+
+def test_evaluation_service_basic(offline_runtime):
+    """Evaluation must retain the ASR transcript in its result."""
+    from chatterpal.services.evaluation import EvaluationService
+    from chatterpal.core.assessment.base import AssessmentResult
+
+    runtime = offline_runtime
+    runtime.recognized_text = "Hello world"
+    runtime.reply = "Good pronunciation!"
+    service = EvaluationService(asr=runtime.asr, llm=runtime.llm)
+    result = service.evaluate_pronunciation(runtime.audio_bytes, "Hello world")
+    assert isinstance(result, AssessmentResult)
+    assert result.overall_score >= 0
+    assert result.recognized_text == "Hello world"
+    assert result.feedback == "Good pronunciation!"
+
+
+def test_correction_service_basic(offline_runtime):
+    """Quick correction must complete the success path with valid audio."""
+    from chatterpal.services.correction import CorrectionService
+
+    runtime = offline_runtime
+    runtime.recognized_text = "Hello world"
+    service = CorrectionService(asr=runtime.asr)
+    result = service.quick_correction(runtime.audio_bytes, "Hello world")
+    assert isinstance(result, dict)
+    assert "overall_score" in result
+    assert result["overall_score"] > 0
+    assert result["key_suggestions"] != ["请检查音频质量后重试"]
+
+
+def test_configuration_system(offline_runtime):
+    """Configuration values match the Settings validators."""
+    settings = offline_runtime.settings
+    assert hasattr(settings, "audio_sample_rate")
+    assert hasattr(settings, "whisper_model")
+    assert hasattr(settings, "asr_provider")
+    assert hasattr(settings, "tts_provider")
+    assert hasattr(settings, "llm_provider")
+    assert settings.audio_sample_rate > 0
+    assert settings.whisper_model in [
+        "tiny", "base", "small", "medium", "large", "large-v2", "large-v3"
+    ]
+
+
+def test_asr_base_functionality(offline_runtime):
+    """Exercise the base recognition contract with a concrete test adapter."""
+    from chatterpal.core.asr.base import ASRBase
+
+    class TestASR(ASRBase):
+        def recognize(self, audio_data, **kwargs):
+            return "测试识别结果"
+
+        def recognize_file(self, audio_path, **kwargs):
+            return "文件识别结果"
+
+    asr = TestASR({})
+    assert asr.recognize(offline_runtime.audio_bytes) == "测试识别结果"
+    assert asr.test_connection() is True
+
 
 def test_tts_base_functionality():
-    """测试TTS基础功能"""
-    try:
-        from chatterpal.core.tts.base import TTSBase
-        
-        class TestTTS(TTSBase):
-            def synthesize(self, text, **kwargs):
-                return f"合成音频: {text}".encode()
-            
-            def synthesize_to_file(self, text, output_path, **kwargs):
-                with open(output_path, 'wb') as f:
-                    f.write(f"合成音频: {text}".encode())
-                return True
-        
-        tts = TestTTS({})
-        
-        # 测试基本功能
-        result = tts.synthesize("Hello world")
-        assert b"Hello world" in result
-        
-        # 测试文本验证
-        assert tts.validate_text("Hello world") is True
-        assert tts.validate_text("") is False
-        
-        print("TTS基础功能正常")
-    except Exception as e:
-        pytest.fail(f"TTS基础功能测试失败: {e}")
+    """The base text validator rejects empty text."""
+    from chatterpal.core.tts.base import TTSBase
+
+    class TestTTS(TTSBase):
+        def synthesize(self, text, **kwargs):
+            return f"合成音频: {text}".encode()
+
+        def synthesize_to_file(self, text, output_path, **kwargs):
+            Path(output_path).write_bytes(self.synthesize(text))
+            return True
+
+    tts = TestTTS({})
+    assert b"Hello world" in tts.synthesize("Hello world")
+    assert tts.validate_text("Hello world") is True
+    assert tts.validate_text("") is False
+
 
 def test_llm_base_functionality():
-    """测试LLM基础功能"""
-    try:
-        from chatterpal.core.llm.base import LLMBase
-        
-        class TestLLM(LLMBase):
-            def chat(self, messages, **kwargs):
-                normalized = self.normalize_messages(messages)
-                if normalized:
-                    last_msg = normalized[-1].get("content", "")
-                    return f"回复: {last_msg}"
-                return "默认回复"
-        
-        llm = TestLLM({})
-        
-        # 测试基本对话
-        response = llm.chat("你好")
-        assert response == "回复: 你好"
-        
-        print("LLM基础功能正常")
-    except Exception as e:
-        pytest.fail(f"LLM基础功能测试失败: {e}")
+    """The base normalizer converts plain input to a user message."""
+    from chatterpal.core.llm.base import LLMBase
 
-def test_end_to_end_workflow():
-    """测试端到端工作流程""
-    try:
-        from chatterpal.services.chat import ChatService
-        from chatterpal.services.evaluation import EvaluationService
-        from chatterpal.services.correction import CorrectionService
-        from chatterpal.core.assessment.base import AssessmentResult
-        from unittest.mock import Mock
-        
-        # 创建模拟组件
-        mock_asr = Mock()
-        mock_asr.recognize.return_value = "Hello, how are you"
-        mock_asr.recognize_file.return_value = "Hello, how are you"
-        mock_asr.recognize_gradio_audio.return_value = "Hello, how are you"
-        
-        mock_tts = Mock()
-        mock_tts.synthesize.return_value = b"response audio"
-        
-        mock_llm = Mock()
-        mock_llm.chat.return_value = "I'm fine, thank you!"
-        
-        # 创建服务
-        chat_service = ChatService(asr=mock_asr, tts=mock_tts, llm=mock_llm)
-        eval_service = EvaluationService(asr=mock_asr, llm=mock_llm)
-        correction_service = CorrectionService(asr=mock_asr)
-        
-        # 1. 用户开始对话
-        response_text, session_id = chat_service.chat_with_text("Hello")
-        assert response_text == "I'm fine, thank you!"
-        assert session_id is not None
-        
-        # 2. 用户录音评估
-        eval_result = eval_service.evaluate_pronunciation(
-            b"audio data", "Hello, how are you"
-        )
-        assert isinstance(eval_result, AssessmentResult)
-        
-        # 3. 获取纠错建议
-        correction_result = correction_service.quick_correction(
-            b"audio data", "Hello, how are you"
-        )
-        assert isinstance(correction_result, dict)
-        
-        print("端到端工作流程正)
-    except Exception as e:
-        pytest.fail(f"端到端工作流程测试失败 {e}")
+    class TestLLM(LLMBase):
+        def chat(self, messages, **kwargs):
+            normalized = self.normalize_messages(messages)
+            if normalized:
+                return f"回复: {normalized[-1]['content']}"
+            return "默认回复"
+
+    llm = TestLLM({})
+    assert llm.chat("你好") == "回复: 你好"
+
+
+def test_end_to_end_workflow(offline_runtime):
+    """A conversation can lead into evaluation and correction."""
+    from chatterpal.services.chat import ChatService
+    from chatterpal.services.evaluation import EvaluationService
+    from chatterpal.services.correction import CorrectionService
+    from chatterpal.core.assessment.base import AssessmentResult
+
+    runtime = offline_runtime
+    chat_service = ChatService(asr=runtime.asr, tts=runtime.tts, llm=runtime.llm)
+    eval_service = EvaluationService(asr=runtime.asr, llm=runtime.llm)
+    correction_service = CorrectionService(asr=runtime.asr)
+    response_text, session_id = chat_service.chat_with_text("Hello")
+    assert response_text == "I'm fine, thank you!"
+    assert session_id is not None
+    eval_result = eval_service.evaluate_pronunciation(
+        runtime.audio_bytes, "Hello, how are you"
+    )
+    assert isinstance(eval_result, AssessmentResult)
+    correction_result = correction_service.quick_correction(
+        runtime.audio_bytes, "Hello, how are you"
+    )
+    assert isinstance(correction_result, dict)
+    assert correction_result["overall_score"] > 0
+
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-s"])
-
-
-
-
-
-
-
-
+    raise SystemExit(pytest.main([__file__, "-v", "-s"]))

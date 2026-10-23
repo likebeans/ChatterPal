@@ -2,11 +2,15 @@
 Tests for Assessment (Pronunciation Assessment) modules.
 """
 
-import os
+import io
 import tempfile
-import pytest
-from unittest.mock import Mock, patch, MagicMock
+import wave
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
 import numpy as np
+import pytest
 
 from chatterpal.core.assessment.base import (
     AssessmentBase, AssessmentError, AssessmentResult, 
@@ -15,6 +19,41 @@ from chatterpal.core.assessment.base import (
 from chatterpal.core.assessment.prosody import ProsodyAnalyzer
 from chatterpal.core.assessment.phoneme import PhonemeAnalyzer
 from chatterpal.core.assessment.corrector import PronunciationCorrector
+
+
+@pytest.fixture
+def assessment_audio(tmp_path):
+    """Use a valid local WAV for decoding and feature extraction."""
+    sample_rate = 16000
+    times = np.arange(sample_rate) / sample_rate
+    samples = (0.4 * np.sin(2 * np.pi * 180 * times)).astype(np.float32)
+    audio_buffer = io.BytesIO()
+    with wave.open(audio_buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes((samples * 32767).astype(np.int16).tobytes())
+    audio_bytes = audio_buffer.getvalue()
+    audio_path = tmp_path / "assessment.wav"
+    audio_path.write_bytes(audio_bytes)
+    return SimpleNamespace(
+        path=str(audio_path), audio_bytes=audio_bytes, gradio=(sample_rate, samples)
+    )
+
+
+@pytest.fixture
+def prosody_sdk(monkeypatch):
+    """Replace myprosody's Praat entry points, retaining feature mapping."""
+    from chatterpal.core.assessment import prosody as module
+
+    sdk = SimpleNamespace(
+        myspsyl=Mock(return_value=7),
+        mysppaus=Mock(return_value=2),
+        myspsr=Mock(return_value=137.0),
+        myspatc=Mock(return_value=163.0),
+    )
+    monkeypatch.setattr(module, "mysp", sdk)
+    return sdk
 
 
 class MockAssessment(AssessmentBase):
@@ -175,38 +214,21 @@ class TestAssessmentBase:
         assessment_with_config = MockAssessment(config)
         assert assessment_with_config.config == config
     
-    def test_validate_audio_data_bytes(self):
-        """Test audio data validation with bytes."""
+    def test_validate_audio_data_bytes(self, assessment_audio):
+        """Test audio data validation with valid WAV bytes."""
         assessment = MockAssessment()
-        
-        assert assessment.validate_audio_data(b"audio data") is True
+        assert assessment.validate_audio_data(assessment_audio.audio_bytes) is True
         assert assessment.validate_audio_data(b"") is False
         assert assessment.validate_audio_data(None) is False
-    
-    def test_validate_audio_data_file_path(self):
-        """Test audio data validation with file path."""
+
+    def test_validate_audio_data_file_path(self, assessment_audio, tmp_path):
+        """Validate existing, missing, and empty audio files."""
         assessment = MockAssessment()
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(b"fake audio data")
-            temp_path = temp_file.name
-        
-        try:
-            assert assessment.validate_audio_data(temp_path) is True
-        finally:
-            os.unlink(temp_path)
-        
-        # Test non-existent file
-        assert assessment.validate_audio_data("nonexistent.wav") is False
-        
-        # Test empty file
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_path = temp_file.name
-        
-        try:
-            assert assessment.validate_audio_data(temp_path) is False
-        finally:
-            os.unlink(temp_path)
+        assert assessment.validate_audio_data(assessment_audio.path) is True
+        assert assessment.validate_audio_data(str(tmp_path / "missing.wav")) is False
+        empty_path = tmp_path / "empty.wav"
+        empty_path.touch()
+        assert assessment.validate_audio_data(str(empty_path)) is False
     
     def test_validate_audio_data_gradio_tuple(self):
         """Test audio data validation with Gradio tuple."""
@@ -229,34 +251,28 @@ class TestAssessmentBase:
         assert assessment.validate_audio_data(123) is False
         assert assessment.validate_audio_data([1, 2, 3]) is False
     
-    @patch('soundfile.write')
-    def test_convert_audio_to_file_bytes(self, mock_sf_write):
-        """Test converting bytes audio data to file."""
+    def test_convert_audio_to_file_bytes(self, assessment_audio, tmp_path):
+        """Convert bytes to a real, decodable file without mocking file I/O."""
         assessment = MockAssessment()
-        
-        audio_data = b"fake audio data"
-        output_path = "output.wav"
-        
-        with patch('builtins.open', create=True) as mock_open:
-            mock_file = MagicMock()
-            mock_open.return_value.__enter__.return_value = mock_file
-            
-            result = assessment.convert_audio_to_file(audio_data, output_path)
-            assert result is True
-            mock_file.write.assert_called_once_with(audio_data)
-    
-    @patch('soundfile.write')
-    def test_convert_audio_to_file_tuple(self, mock_sf_write):
-        """Test converting Gradio tuple audio data to file."""
-        assessment = MockAssessment()
-        
-        audio_array = np.array([0.1, 0.2, 0.3])
-        audio_data = (16000, audio_array)
-        output_path = "output.wav"
-        
-        result = assessment.convert_audio_to_file(audio_data, output_path)
+        output_path = tmp_path / "output.wav"
+        result = assessment.convert_audio_to_file(assessment_audio.audio_bytes, str(output_path))
         assert result is True
-        mock_sf_write.assert_called_once_with(output_path, audio_array, 16000)
+        assert output_path.read_bytes() == assessment_audio.audio_bytes
+        with wave.open(str(output_path), "rb") as output:
+            assert output.getframerate() == 16000
+            assert output.getnframes() == 16000
+
+    def test_convert_audio_to_file_tuple(self, assessment_audio, tmp_path):
+        """Convert Gradio samples and inspect the encoded PCM frames."""
+        assessment = MockAssessment()
+        output_path = tmp_path / "tuple.wav"
+        result = assessment.convert_audio_to_file(assessment_audio.gradio, str(output_path))
+        assert result is True
+        with wave.open(str(output_path), "rb") as output:
+            assert output.getframerate() == assessment_audio.gradio[0]
+            assert output.getnframes() == len(assessment_audio.gradio[1])
+            encoded_samples = np.frombuffer(output.readframes(-1), dtype=np.int16) / 32768
+        np.testing.assert_allclose(encoded_samples, assessment_audio.gradio[1], atol=1 / 32768)
     
     def test_convert_audio_to_file_invalid(self):
         """Test converting invalid audio data to file."""
@@ -331,18 +347,19 @@ class TestAssessmentBase:
         assert len(result.suggestions) > 0
     
     def test_test_functionality_success(self):
-        """Test functionality test success."""
+        """Run the real synthetic-audio functionality check."""
         assessment = MockAssessment()
-        
-        with patch('numpy.linspace'), patch('numpy.sin'):
-            assert assessment.test_functionality() is True
-    
+        assert assessment.test_functionality() is True
+        audio_data, target_text, _ = assessment.assess_calls[0]
+        assert audio_data[0] == 16000
+        assert audio_data[1].shape == (16000,)
+        assert target_text == "test"
+
     def test_test_functionality_failure(self):
-        """Test functionality test failure."""
+        """The functionality probe reports assessment failure."""
         assessment = MockAssessment(should_fail=True)
-        
-        with patch('numpy.linspace'), patch('numpy.sin'):
-            assert assessment.test_functionality() is False
+        assert assessment.test_functionality() is False
+        assert len(assessment.assess_calls) == 1
 
 
 class TestProsodyAnalyzer:
@@ -354,68 +371,50 @@ class TestProsodyAnalyzer:
         analyzer = ProsodyAnalyzer(config)
         assert analyzer.config == config
     
-    @patch('parselmouth.Sound')
-    @patch('myprosody.mysptotal')
-    def test_analyze_prosody_success(self, mock_mysptotal, mock_sound):
-        """Test successful prosody analysis."""
-        # Mock myprosody output
-        mock_mysptotal.return_value = [
-            "test.wav", 120.0, 150.0, 180.0, 25.0, 100.0, 200.0,
-            0.5, 120.0, 0.7, 0.8, 0.7, 0.7, 5, 1
-        ]
-        
-        # Mock parselmouth Sound
-        mock_sound_obj = MagicMock()
-        mock_sound.return_value = mock_sound_obj
-        
+    def test_analyze_prosody_success(self, assessment_audio, prosody_sdk):
+        """Map the actual myprosody calls into a ProsodyFeatures result."""
         analyzer = ProsodyAnalyzer()
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(b"fake audio data")
-            temp_path = temp_file.name
-        
-        try:
-            features = analyzer.analyze_prosody(temp_path)
-            assert isinstance(features, ProsodyFeatures)
-            assert features.speaking_rate == 120.0
-            assert features.f0_mean == 180.0
-        finally:
-            os.unlink(temp_path)
-    
-    @patch('myprosody.mysptotal')
-    def test_analyze_prosody_failure(self, mock_mysptotal):
-        """Test prosody analysis failure."""
-        mock_mysptotal.side_effect = Exception("Analysis failed")
-        
+        result = analyzer.assess(assessment_audio.audio_bytes, "test text")
+        assert result["analysis_success"] is True
+        assert result["error"] is None
+        features = result["prosody_features"]
+        assert isinstance(features, ProsodyFeatures)
+        assert features.speaking_rate == 137.0
+        assert features.articulation_rate == 163.0
+        assert features.syllable_count == 7
+        assert features.pause_count == 2
+        prosody_sdk.myspsr.assert_called_once()
+        name, directory = prosody_sdk.myspsr.call_args.args
+        assert not name.endswith(".wav")
+        assert not (Path(directory) / f"{name}.wav").exists()
+        # The fixture contains a measured 180 Hz tone, not the default 150 Hz.
+        assert features.f0_mean == pytest.approx(180.0, abs=2.0)
+
+    def test_analyze_prosody_failure(self, assessment_audio, prosody_sdk):
+        """An unusable backend must not be reported as successful analysis."""
+        for function in vars(prosody_sdk).values():
+            function.side_effect = RuntimeError("Analysis failed")
         analyzer = ProsodyAnalyzer()
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(b"fake audio data")
-            temp_path = temp_file.name
-        
-        try:
-            with pytest.raises(AssessmentError):
-                analyzer.analyze_prosody(temp_path)
-        finally:
-            os.unlink(temp_path)
-    
-    def test_assess_with_file_path(self):
-        """Test assessment with file path."""
-        analyzer = ProsodyAnalyzer()
-        
-        with patch.object(analyzer, 'analyze_prosody') as mock_analyze:
-            mock_analyze.return_value = ProsodyFeatures()
-            
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_file.write(b"fake audio data")
-                temp_path = temp_file.name
-            
-            try:
-                result = analyzer.assess(temp_path, "test text")
-                assert isinstance(result, AssessmentResult)
-                assert result.target_text == "test text"
-            finally:
-                os.unlink(temp_path)
+        with pytest.raises(AssessmentError):
+            analyzer.assess(assessment_audio.audio_bytes)
+
+    @pytest.mark.parametrize("analyzer_type", [ProsodyAnalyzer, PhonemeAnalyzer])
+    def test_assess_with_file_path(self, assessment_audio, prosody_sdk, analyzer_type):
+        """A caller-owned WAV survives analysis even under the system temp root."""
+        analyzer = analyzer_type()
+        # Preserve tempfile's spelling: macOS /var and /private/var aliases
+        # otherwise bypass the production prefix-based deletion branch.
+        with tempfile.TemporaryDirectory(dir=analyzer.temp_dir) as directory:
+            audio_path = Path(directory) / "caller.wav"
+            audio_path.write_bytes(assessment_audio.audio_bytes)
+            result = analyzer.assess(str(audio_path), "test text")
+            assert isinstance(result, dict)
+            assert result["analysis_success"] is True
+            if analyzer_type is ProsodyAnalyzer:
+                assert isinstance(result["prosody_features"], ProsodyFeatures)
+                prosody_sdk.myspsr.assert_called_once_with("caller", directory)
+            assert audio_path.exists(), "Analyzer deleted the caller's WAV"
+            assert audio_path.read_bytes() == assessment_audio.audio_bytes
 
 
 class TestPhonemeAnalyzer:
@@ -427,40 +426,27 @@ class TestPhonemeAnalyzer:
         analyzer = PhonemeAnalyzer(config)
         assert analyzer.config == config
     
-    @patch('speech_recognition.Recognizer')
-    @patch('speech_recognition.AudioFile')
-    def test_analyze_phonemes_success(self, mock_audio_file, mock_recognizer):
-        """Test successful phoneme analysis."""
-        # Mock speech recognition
-        mock_r = MagicMock()
-        mock_audio = MagicMock()
-        mock_r.recognize_google.return_value = "hello world"
-        mock_recognizer.return_value = mock_r
-        mock_audio_file.return_value.__enter__.return_value = mock_audio
-        
+    def test_analyze_phonemes_success(self, assessment_audio):
+        """Exercise actual local Praat analysis through the current assess API."""
         analyzer = PhonemeAnalyzer()
-        
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-            temp_file.write(b"fake audio data")
-            temp_path = temp_file.name
-        
-        try:
-            analysis = analyzer.analyze_phonemes(temp_path, "hello world")
-            assert isinstance(analysis, list)
-        finally:
-            os.unlink(temp_path)
-    
-    def test_assess_with_gradio_tuple(self):
-        """Test assessment with Gradio tuple."""
+        analysis = analyzer.assess(assessment_audio.audio_bytes, "hello world")
+        assert isinstance(analysis, dict)
+        assert analysis["analysis_success"] is True
+        assert analysis["duration"] == pytest.approx(1.0)
+        assert analysis["sample_rate"] == 16000
+        assert analysis["pitch"]["mean"] == pytest.approx(180.0, abs=2.0)
+        assert 0 <= analysis["quality_score"] <= 100
+        assert {"formants", "intensity", "spectral"} <= analysis.keys()
+
+    def test_assess_with_gradio_tuple(self, assessment_audio):
+        """Convert real Gradio samples and analyze them without a model or cloud."""
         analyzer = PhonemeAnalyzer()
-        
-        audio_array = np.array([0.1, 0.2, 0.3])
-        audio_data = (16000, audio_array)
-        
-        with patch.object(analyzer, 'convert_audio_to_file', return_value=True):
-            with patch.object(analyzer, 'analyze_phonemes', return_value=[]):
-                result = analyzer.assess(audio_data, "test")
-                assert isinstance(result, AssessmentResult)
+        result = analyzer.assess(assessment_audio.gradio, "test")
+        assert isinstance(result, dict)
+        assert result["analysis_success"] is True
+        assert result["duration"] == pytest.approx(1.0)
+        assert result["sample_rate"] == 16000
+        assert result["pitch"]["mean"] == pytest.approx(180.0, abs=2.0)
 
 
 class TestPronunciationCorrector:
@@ -472,50 +458,33 @@ class TestPronunciationCorrector:
         corrector = PronunciationCorrector(config)
         assert corrector.config == config
     
-    def test_assess_comprehensive(self):
-        """Test comprehensive pronunciation assessment."""
+    def test_assess_comprehensive(self, assessment_audio):
+        """Comprehensive assessment must retain actual phoneme analysis."""
         corrector = PronunciationCorrector()
-        
-        # Mock the component analyzers
-        with patch.object(corrector, 'prosody_analyzer') as mock_prosody:
-            with patch.object(corrector, 'phoneme_analyzer') as mock_phoneme:
-                # Mock prosody analysis
-                mock_prosody.analyze_prosody.return_value = ProsodyFeatures(
-                    speaking_rate=120.0,
-                    fluency_score=0.8
-                )
-                
-                # Mock phoneme analysis
-                mock_phoneme.analyze_phonemes.return_value = [
-                    PhonemeAnalysis("æ", "correct", "Good pronunciation")
-                ]
-                
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                    temp_file.write(b"fake audio data")
-                    temp_path = temp_file.name
-                
-                try:
-                    result = corrector.assess(temp_path, "hello world")
-                    assert isinstance(result, AssessmentResult)
-                    assert result.overall_score > 0
-                    assert len(result.phoneme_analysis) > 0
-                finally:
-                    os.unlink(temp_path)
+        # The corrector has no component-analyzer attributes to patch. Exercise
+        # its public API so its currently unimplemented integration stays visible.
+        result = corrector.assess(assessment_audio.path, "hello world")
+        assert isinstance(result, AssessmentResult)
+        assert result.overall_score > 0
+        assert result.target_text == "hello world"
+        assert result.audio_duration == pytest.approx(1.0)
+        assert len(result.phoneme_analysis) > 0, "Comprehensive assessment returned no phoneme analysis"
     
     def test_generate_feedback(self):
         """Test feedback generation."""
         corrector = PronunciationCorrector()
         
+        # Corrector feedback formats and compares scores on a 0-100 scale.
         result = AssessmentResult(
-            overall_score=0.7,
-            fluency_score=0.6,
-            pronunciation_score=0.8,
-            prosody_score=0.7,
-            accuracy_score=0.75,
+            overall_score=70.0,
+            fluency_score=60.0,
+            pronunciation_score=80.0,
+            prosody_score=70.0,
+            accuracy_score=75.0,
             prosody_features=ProsodyFeatures()
         )
-        
-        feedback = corrector.generate_feedback(result)
+
+        feedback = corrector._generate_comprehensive_feedback(result)
         assert isinstance(feedback, str)
         assert len(feedback) > 0
     
@@ -524,18 +493,19 @@ class TestPronunciationCorrector:
         corrector = PronunciationCorrector()
         
         result = AssessmentResult(
-            overall_score=0.6,
-            fluency_score=0.5,
-            pronunciation_score=0.7,
-            prosody_score=0.6,
-            accuracy_score=0.65,
-            prosody_features=ProsodyFeatures(speaking_rate=80.0)  # Slow speaking
+            overall_score=60.0,
+            fluency_score=50.0,
+            pronunciation_score=70.0,
+            prosody_score=60.0,
+            accuracy_score=65.0,
+            prosody_features=ProsodyFeatures(speaking_rate=80.0)
         )
-        
-        suggestions = corrector.generate_suggestions(result)
+
+        suggestions = corrector._generate_improvement_suggestions(result)
         assert isinstance(suggestions, list)
         assert len(suggestions) > 0
-        assert any("速度" in suggestion for suggestion in suggestions)
+        # Slow speech must receive a speed-specific improvement suggestion.
+        assert any("速度" in suggestion or "语速" in suggestion for suggestion in suggestions)
 
 if __name__ == "__main__":
     pytest.main([__file__])

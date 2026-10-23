@@ -22,6 +22,20 @@ from chatterpal.services.chat_config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def isolated_config_state(tmp_path, monkeypatch):
+    """Exercise real managers with per-test storage and fresh singletons."""
+    from chatterpal.services import chat_config
+    from chatterpal.utils import preferences
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(preferences, "_preferences_manager", None)
+    monkeypatch.setattr(chat_config, "_chat_config_manager", None)
+    settings = Mock()
+    settings.get_cache_path.return_value = tmp_path / "cache"
+    monkeypatch.setattr(chat_config, "get_settings", lambda: settings)
+
+
 class TestAudioConfig:
     """音频配置测试"""
     
@@ -463,7 +477,8 @@ class TestConfigIntegration:
     
     def test_invalid_config_file_handling(self, temp_config_dir):
         """测试无效配置文件处理"""
-        config_file = Path(temp_config_dir) / "chat_config" / "chat_config.json"
+        # An explicit config_dir is used directly by ChatConfigManager.
+        config_file = Path(temp_config_dir) / "chat_config.json"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         
         # 写入无效的JSON
@@ -473,7 +488,8 @@ class TestConfigIntegration:
         # 创建管理器,应该使用默认配置
         manager = ChatConfigManager(config_dir=temp_config_dir)
         config = manager.get_config()
-        
+
+        assert manager.config_file == config_file
         assert config.audio.max_recording_duration == 60  # 默认
 
 

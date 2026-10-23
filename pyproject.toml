@@ -138,11 +138,16 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "-ra",
     "--cov=src/chatterpal",
     "--cov-report=term-missing",
     "--cov-report=html",
     "--cov-fail-under=80",
 ]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["src/chatterpal"]

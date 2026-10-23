@@ -257,13 +257,19 @@ class TestAudioControlsIntegration:
             mock_get_prefs.return_value = preferences
             chat_tab = ChatTab(self.mock_chat_service)
             
-            # 测试播放时的异常处理
-            # 模拟异常情况(虽然当前实现中没有可能抛出异常的代码,但为了完整性)
-            with patch.object(chat_tab, '_handle_audio_play', side_effect=Exception("播放错误")):
-                try:
-                    chat_tab._handle_audio_play((16000, [1, 2, 3]))
-                except Exception as e:
-                    assert "播放错误" in str(e)
+            # A malformed input exercises the real callback's recovery path.
+            class UnreadableAudio:
+                def __len__(self):
+                    raise ValueError("播放错误")
+
+            status, play, pause, stop = chat_tab._handle_audio_play(
+                (16000, UnreadableAudio())
+            )
+            assert "播放失败" in status["value"]
+            assert "播放错误" in status["value"]
+            assert play["interactive"] is True
+            assert pause["interactive"] is False
+            assert stop["interactive"] is False
 
 
 class TestAudioControlsUserExperience:

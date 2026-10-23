@@ -4,6 +4,7 @@
 
 import pytest
 import tempfile
+import gradio as gr
 from unittest.mock import Mock, MagicMock, patch
 
 from chatterpal.web.components.chat_tab import ChatTab
@@ -79,7 +80,7 @@ class TestHistoryManagement:
         # 验证结果
         assert history == []  # 历史记录被清空
         assert "已清除所有对话" in status_update["value"]
-        assert "1 页,1 条" in page_update["value"]
+        assert page_update["value"] == "**第 1 页，共 1 页**"
         assert prev_btn_update["interactive"] is False
         assert next_btn_update["interactive"] is False
         
@@ -255,10 +256,14 @@ class TestHistoryManagement:
         # 验证格式化结果
         assert isinstance(history, list)
         
-        # 验证消息格式
-        for item in history:
-            assert isinstance(item, list)
-            assert len(item) == 2  # [user_message, assistant_message]
+        # ChatTab declares a messages-mode Chatbot; pagination must be
+        # accepted by that real component, including both message contents.
+        chatbot = gr.Chatbot(type="messages")
+        displayed = chatbot.postprocess(history)
+        assert displayed is not None
+        payload = str(displayed.model_dump())
+        assert "Hello" in payload
+        assert "Hi there!" in payload
     
     def test_history_state_persistence(self):
         """测试历史状态的持久性"""
@@ -343,16 +348,46 @@ class TestHistoryManagementIntegration:
             
             # 测试清除历史
             result = chat_tab._clear_history_with_confirmation([])
-            history, status_update, _, _, _ = result
-            
+            history, status_update, page_update, prev_btn_update, next_btn_update = result
+
             assert history == []
             assert "已清除所有对话" in status_update["value"]
-            assert "1 页,1 条" in page_update["value"]
+            assert page_update["value"] == "**第 1 页，共 1 页**"
             assert prev_btn_update["interactive"] is False
             assert next_btn_update["interactive"] is False
             
             # 验证服务方法被调用
             self.mock_chat_service.clear_conversation_history.assert_called_once_with("test_session")
+
+    def test_cleared_history_does_not_count_system_prompt(self):
+        """Clearing visible history must leave an empty UI despite retained context."""
+        service = ChatService()
+        session_id = service.create_session(system_prompt="Internal coaching instructions")
+        session = service.get_session(session_id)
+        session.add_user_message("Hello")
+        session.add_assistant_message("Hi there!")
+        preferences = UserPreferences(config_dir=self.temp_dir)
+        with patch(
+            "chatterpal.web.components.chat_tab.get_preferences_manager",
+            return_value=preferences,
+        ):
+            chat_tab = ChatTab(service)
+        chat_tab.current_session_id = session_id
+
+        history, status, page, previous, following = chat_tab._clear_history_with_confirmation(
+            [["Hello", "Hi there!"]]
+        )
+        assert history == []
+        assert "已清除所有对话" in status["value"]
+        assert page["value"] == "**第 1 页，共 1 页**"
+        assert previous["interactive"] is False
+        assert following["interactive"] is False
+        # Keeping the system message internally is the documented service
+        # contract. UI counts and empty-history status must still exclude it.
+        assert service.get_conversation_history(session_id) == [
+            {"role": "system", "content": "Internal coaching instructions"}
+        ]
+        assert chat_tab._update_history_status(history) == "**历史记录:** 暂无对话记录"
 
 
 if __name__ == "__main__":
