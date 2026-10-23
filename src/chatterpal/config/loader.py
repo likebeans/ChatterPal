@@ -103,6 +103,9 @@ def get_config_summary() -> Dict[str, Any]:
         },
         "models": {
             "whisper": settings.whisper_model,
+            "whisper_device": settings.whisper_device,
+            "whisper_language": settings.whisper_language,
+            "whisper_max_cached_models": settings.whisper_max_cached_models,
         },
         "audio": {
             "sample_rate": settings.audio_sample_rate,
@@ -172,6 +175,12 @@ def print_config_status() -> None:
 
         print("Models:")
         print(f"  Whisper: {summary['models']['whisper']}")
+        print(f"  Whisper Device: {summary['models']['whisper_device']}")
+        print(f"  Whisper Language: {summary['models']['whisper_language']}")
+        print(
+            "  Whisper Cached Models per Adapter: "
+            f"{summary['models']['whisper_max_cached_models']}"
+        )
         print()
 
         print("Audio Settings:")
@@ -261,6 +270,8 @@ def create_asr(settings: Optional[Settings] = None):
             {
                 "model_size": settings.whisper_model,
                 "device": settings.whisper_device,
+                "language": settings.whisper_language,
+                "max_cached_models": settings.whisper_max_cached_models,
             }
         )
     elif settings.asr_provider == "alibaba":
