@@ -5,7 +5,11 @@ Whisper语音识别实现
 """
 
 import os
+import re
 import tempfile
+import threading
+import traceback
+from collections import OrderedDict
 from typing import Optional, Dict, Any
 import logging
 
@@ -31,7 +35,9 @@ class WhisperASR(ASRBase):
         Args:
             config: 配置参数，支持以下参数：
                 - model_size: Whisper模型大小 (tiny, base, small, medium, large)
-                - language: 识别语言 (zh为中文, en为英文)
+                - language: 识别语言 (默认en；支持zh、auto、english、chinese)
+                - device: 模型设备 (默认auto；支持cpu、cuda、cuda:N；MPS暂不支持)
+                - max_cached_models: 实例模型缓存容量 (1至4，默认1)
                 - energy_threshold: 能量阈值
                 - pause_threshold: 暂停阈值
         """
@@ -43,7 +49,19 @@ class WhisperASR(ASRBase):
             )
 
         self.model_size = self.config.get("model_size", "base")
-        self.language = self.config.get("language", "zh")
+        self.language = self.config.get("language", "en")
+        self.device = self.config.get("device", "auto")
+        self.max_cached_models = self.config.get("max_cached_models", 1)
+        if (
+            isinstance(self.max_cached_models, bool)
+            or not isinstance(self.max_cached_models, int)
+            or not 1 <= self.max_cached_models <= 4
+        ):
+            raise ValueError("max_cached_models must be an integer from 1 to 4")
+        self._convert_language_code(self.language)
+        self._validate_device(self.device)
+        self._models = OrderedDict()
+        self._runtime_lock = threading.Lock()
 
         # 初始化识别器
         self.recognizer = sr.Recognizer()
@@ -72,26 +90,26 @@ class WhisperASR(ASRBase):
         Raises:
             ASRError: 识别过程中的错误
         """
+        temp_path = None
         try:
-            # 将字节数据保存为临时文件
+            # 字节输入创建的文件归本次调用所有，即使写入或识别失败也会清理。
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
-                temp_file.write(audio_data)
                 temp_path = temp_file.name
+                temp_file.write(audio_data)
 
-            # 识别临时文件
-            result = self.recognize_file(temp_path, **kwargs)
+            return self.recognize_file(temp_path, **kwargs)
 
-            # 清理临时文件
-            try:
-                os.unlink(temp_path)
-            except:
-                pass
-
-            return result
-
+        except ASRError:
+            raise
         except Exception as e:
             self.logger.error(f"识别音频字节数据失败: {e}")
-            raise ASRError(f"识别音频字节数据失败: {e}")
+            raise ASRError(f"识别音频字节数据失败: {e}") from e
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError as e:
+                    self.logger.warning(f"清理临时音频文件失败: {e}")
 
     def recognize_file(self, audio_path: str, **kwargs) -> Optional[str]:
         """
@@ -102,6 +120,7 @@ class WhisperASR(ASRBase):
             **kwargs: 其他参数，支持：
                 - model_size: 临时覆盖模型大小
                 - language: 临时覆盖语言设置
+                - device: 临时覆盖模型设备
 
         Returns:
             识别结果文本，失败返回None
@@ -119,9 +138,6 @@ class WhisperASR(ASRBase):
 
             # 使用speech_recognition加载音频文件
             with sr.AudioFile(audio_path) as source:
-                # 调整环境噪音
-                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                # 录制音频数据
                 audio_data = self.recognizer.record(source)
 
             # 使用Whisper进行识别
@@ -129,9 +145,11 @@ class WhisperASR(ASRBase):
                 # 转换语言代码
                 whisper_language = self._convert_language_code(language)
 
-                # 尝试使用本地Whisper模型
-                result = self.recognizer.recognize_whisper(
-                    audio_data, model=model_size, language=whisper_language
+                result = self._transcribe(
+                    audio_data,
+                    model_size,
+                    whisper_language,
+                    kwargs.get("device", self.device),
                 )
 
                 self.logger.info(f"语音识别成功: {result}")
@@ -188,8 +206,11 @@ class WhisperASR(ASRBase):
             try:
                 whisper_language = self._convert_language_code(language)
 
-                result = self.recognizer.recognize_whisper(
-                    audio_data, model=model_size, language=whisper_language
+                result = self._transcribe(
+                    audio_data,
+                    model_size,
+                    whisper_language,
+                    kwargs.get("device", self.device),
                 )
 
                 self.logger.info(f"麦克风语音识别成功: {result}")
@@ -268,6 +289,7 @@ class WhisperASR(ASRBase):
         Returns:
             测试是否成功
         """
+        temp_path = None
         try:
             # 创建一个简单的测试音频（静音）
             import numpy as np
@@ -279,18 +301,16 @@ class WhisperASR(ASRBase):
             samples = np.zeros(sample_rate * duration, dtype=np.int16)
 
             # 保存为临时WAV文件
-            temp_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            with wave.open(temp_file.name, "w") as wav_file:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+                temp_path = temp_file.name
+            with wave.open(temp_path, "wb") as wav_file:
                 wav_file.setnchannels(1)
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(sample_rate)
                 wav_file.writeframes(samples.tobytes())
 
             # 尝试识别（预期会失败，但不应该抛出异常）
-            result = self.recognize_file(temp_file.name)
-
-            # 清理临时文件
-            os.unlink(temp_file.name)
+            self.recognize_file(temp_path)
 
             self.logger.info("Whisper功能测试完成")
             return True
@@ -298,8 +318,66 @@ class WhisperASR(ASRBase):
         except Exception as e:
             self.logger.error(f"Whisper功能测试失败: {e}")
             return False
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except OSError as e:
+                    self.logger.warning(f"清理连接测试音频失败: {e}")
 
-    def _convert_language_code(self, language: str) -> str:
+    def _transcribe(
+        self, audio_data, model_size: str, language: Optional[str], device: str
+    ) -> str:
+        """在同一实例锁内加载并推理，避免跨模型键并行使用运行时。"""
+        import numpy as np
+        import torch
+        import whisper
+
+        self._validate_device(device)
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cuda":
+            device = f"cuda:{torch.cuda.current_device()}"
+        with self._runtime_lock:
+            model = None
+            try:
+                key = (model_size, device)
+                if key not in self._models:
+                    if len(self._models) >= self.max_cached_models:
+                        # 先释放最久未用模型，加载期间也不超过实例容量。
+                        self._models.popitem(last=False)
+                    self._models[key] = whisper.load_model(model_size, device=device)
+                self._models.move_to_end(key)
+                model = self._models[key]
+                raw_data = audio_data.get_raw_data(convert_rate=16000, convert_width=2)
+                waveform = (
+                    np.frombuffer(raw_data, dtype="<i2").astype(np.float32) / 32768.0
+                )
+                result = model.transcribe(
+                    waveform, language=language, fp16=device.startswith("cuda")
+                )
+                return result["text"]
+            except Exception as e:
+                # 保留异常堆栈信息，但不让外部保留的异常延长模型/张量寿命。
+                traceback.clear_frames(e.__traceback__)
+                raise
+            finally:
+                del model
+
+    @staticmethod
+    def _validate_device(device: str) -> None:
+        if device == "mps":
+            raise ValueError(
+                "device 'mps' is unsupported by the current Whisper/PyTorch runtime; "
+                "use cpu or auto"
+            )
+        if not isinstance(device, str) or (
+            device not in {"auto", "cpu", "cuda"}
+            and not re.fullmatch(r"cuda:(0|[1-9][0-9]*)", device)
+        ):
+            raise ValueError("device must be auto, cpu, cuda or cuda:N")
+
+    def _convert_language_code(self, language: str) -> Optional[str]:
         """
         转换语言代码为Whisper支持的格式
 
@@ -314,13 +392,16 @@ class WhisperASR(ASRBase):
             "en": "english",
             "chinese": "chinese",
             "english": "english",
+            "auto": None,
         }
 
-        return language_map.get(language.lower(), language)
+        if not isinstance(language, str) or language.lower() not in language_map:
+            raise ValueError("language must be en, zh, auto, english or chinese")
+        return language_map[language.lower()]
 
 
 # 便捷函数
-def create_whisper_asr(model_size: str = "base", language: str = "zh") -> WhisperASR:
+def create_whisper_asr(model_size: str = "base", language: str = "en") -> WhisperASR:
     """
     创建WhisperASR实例的便捷函数
 
@@ -336,7 +417,7 @@ def create_whisper_asr(model_size: str = "base", language: str = "zh") -> Whispe
 
 
 def recognize_audio_file(
-    audio_file_path: str, model_size: str = "base", language: str = "zh"
+    audio_file_path: str, model_size: str = "base", language: str = "en"
 ) -> Optional[str]:
     """
     识别音频文件的便捷函数
@@ -354,7 +435,7 @@ def recognize_audio_file(
 
 
 def recognize_microphone(
-    duration: int = 5, model_size: str = "base", language: str = "zh"
+    duration: int = 5, model_size: str = "base", language: str = "en"
 ) -> Optional[str]:
     """
     从麦克风录音并识别的便捷函数

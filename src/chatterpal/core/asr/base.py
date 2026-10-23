@@ -5,7 +5,8 @@ ASR基类定义
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, Union, Tuple
+from contextlib import contextmanager
+from typing import Optional, Dict, Any, Union, Tuple, Iterator
 from dataclasses import dataclass
 from enum import Enum
 import logging
@@ -138,7 +139,7 @@ class ASRBase(ABC):
                 return self.recognize_file(audio_data, **kwargs)
 
             # 如果是元组，说明是Gradio的(sample_rate, audio_array)格式
-            if isinstance(audio_data, tuple) and len(audio_data) == 2:
+            if isinstance(audio_data, tuple):
                 return self._handle_gradio_tuple(audio_data, **kwargs)
 
             self.logger.error(f"不支持的音频数据格式: {type(audio_data)}")
@@ -161,38 +162,125 @@ class ASRBase(ABC):
         Returns:
             识别结果文本，失败返回None
         """
-        import tempfile
+        with self._normalize_audio_input(
+            audio_data, kwargs.get("sample_rate")
+        ) as audio_path:
+            return self.recognize_file(audio_path, **kwargs)
+
+    @contextmanager
+    def _normalize_audio_input(
+        self,
+        audio_data: Union[bytes, str, Tuple[int, Any]],
+        sample_rate: Optional[int] = None,
+    ) -> Iterator[Union[bytes, str]]:
+        """只转换输入；临时文件的所有权覆盖验证、识别和重试。"""
+        if not isinstance(audio_data, tuple):
+            yield audio_data
+            return
+
         import os
+        import tempfile
+        import numpy as np
+        import soundfile as sf
 
+        target_sample_rate = getattr(self, "sample_rate", None)
+        if target_sample_rate is not None and sample_rate is not None:
+            target_sample_rate = sample_rate
+        temp_path = None
         try:
+            if len(audio_data) != 2:
+                raise ASRError("Gradio音频必须包含采样率和音频数组")
             sample_rate, audio_array = audio_data
-
-            # 创建临时文件保存音频数据
-            import soundfile as sf
-
+            if (
+                isinstance(sample_rate, (bool, np.bool_))
+                or not isinstance(sample_rate, (int, np.integer))
+                or sample_rate <= 0
+            ):
+                raise ASRError("音频采样率必须为正整数")
+            audio_array = np.asarray(audio_array)
+            if (
+                audio_array.ndim not in (1, 2)
+                or audio_array.size == 0
+                or (audio_array.ndim == 2 and audio_array.shape[1] not in (1, 2))
+                or audio_array.dtype.kind not in ("i", "f")
+                or not np.isfinite(audio_array).all()
+            ):
+                raise ASRError("音频必须为有限数值的非空单声道或双声道数组")
+            if audio_array.dtype.kind == "f":
+                if audio_array.dtype.itemsize not in (4, 8):
+                    audio_array = audio_array.astype(np.float64)
+            elif audio_array.dtype not in (np.dtype("int16"), np.dtype("int32")):
+                raise ASRError("整数音频必须为int16或int32 PCM")
+            if target_sample_rate is not None:
+                if (
+                    isinstance(target_sample_rate, (bool, np.bool_))
+                    or not isinstance(target_sample_rate, (int, np.integer))
+                    or target_sample_rate <= 0
+                ):
+                    raise ASRError("目标采样率必须为正整数")
+                # 固定采样率的流式提供商需要真实重采样和单声道PCM。
+                if audio_array.dtype.kind == "i":
+                    scale = 2 ** (8 * audio_array.dtype.itemsize - 1)
+                    audio_array = audio_array.astype(np.float64) / scale
+                if audio_array.ndim == 2:
+                    audio_array = audio_array.mean(axis=1)
+                if sample_rate != target_sample_rate:
+                    from math import gcd
+                    from scipy.signal import resample_poly
+                    divisor = gcd(int(sample_rate), int(target_sample_rate))
+                    audio_array = resample_poly(
+                        audio_array,
+                        int(target_sample_rate) // divisor,
+                        int(sample_rate) // divisor,
+                    )
+                sample_rate = target_sample_rate
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                 temp_path = temp_file.name
+            sf.write(temp_path, audio_array, int(sample_rate))
+            yield temp_path
+        finally:
+            if temp_path is not None:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
 
-            # 将numpy数组保存为wav文件
-            sf.write(temp_path, audio_array, sample_rate)
+    def _read_audio_for_quality(
+        self, audio_data: Union[bytes, str], sample_rate: Optional[int] = None
+    ) -> Tuple[Any, int]:
+        """解码容器后按真实采样率评估，保留旧的16位PCM字节输入。"""
+        import io
+        import numpy as np
+        import soundfile as sf
 
-            # 识别临时文件
-            result = self.recognize_file(temp_path, **kwargs)
-
-            # 清理临时文件
+        if isinstance(audio_data, bytes):
             try:
-                os.unlink(temp_path)
-            except:
-                pass
+                audio_array, decoded_rate = sf.read(io.BytesIO(audio_data), dtype="float32")
+            except sf.LibsndfileError:
+                is_wave = (
+                    audio_data[:4] in (b"RIFF", b"RIFX", b"RF64")
+                    and audio_data[8:12] == b"WAVE"
+                )
+                is_aiff = (
+                    audio_data[:4] == b"FORM"
+                    and audio_data[8:12] in (b"AIFF", b"AIFC")
+                )
+                if is_wave or is_aiff:
+                    raise
+                audio_array = (
+                    np.frombuffer(audio_data, dtype="<i2").astype(np.float32) / 32768.0
+                )
+                decoded_rate = sample_rate or self.config.get("sample_rate", 16000)
+        else:
+            try:
+                audio_array, decoded_rate = sf.read(audio_data, dtype="float32")
+            except sf.LibsndfileError:
+                from ...utils.audio import AudioProcessor
+                audio_array, decoded_rate = AudioProcessor().read_audio_file(audio_data)
 
-            return result
-
-        except ImportError:
-            self.logger.error("soundfile库未安装，无法处理Gradio音频数据")
-            raise ASRError("soundfile库未安装")
-        except Exception as e:
-            self.logger.error(f"处理Gradio音频数据失败: {e}")
-            raise ASRError(f"处理Gradio音频数据失败: {e}")
+        if audio_array.ndim == 2:
+            audio_array = audio_array.mean(axis=1)
+        return audio_array, decoded_rate
 
     def test_connection(self) -> bool:
         """
@@ -264,80 +352,70 @@ class ASRBase(ABC):
         """
         from ..errors import error_handler, SpeechRecognitionError, AudioInputError
         
-        # 首先进行音频验证
+        # 转换只做一次，临时音频在所有重试结束后释放。
         try:
-            # 如果是Gradio格式，先转换
-            if isinstance(audio_data, tuple) and len(audio_data) == 2:
-                # 处理Gradio格式
-                processed_audio = self._handle_gradio_tuple(audio_data, **kwargs)
-                if processed_audio is None:
-                    raise AudioInputError(error_handler.create_error("AUDIO_FORMAT_ERROR").error_info)
-                audio_data = processed_audio
-            
-            # 验证音频数据
-            if isinstance(audio_data, str):
-                # 文件路径验证
-                if not self.validate_audio_file(audio_data):
-                    raise AudioInputError(error_handler.create_error("AUDIO_FORMAT_ERROR").error_info)
-            else:
-                # 字节数据验证
-                try:
-                    from ...utils.audio import AudioProcessor
-                    processor = AudioProcessor()
-                    validation_result = processor.validate_audio_input(audio_data)
-                    
-                    # 检查验证结果
-                    validation_error = error_handler.handle_audio_validation_error(validation_result)
-                    if validation_error:
-                        raise validation_error
-                        
-                except ImportError:
-                    # 如果AudioProcessor不可用，进行基本验证
-                    if isinstance(audio_data, bytes) and len(audio_data) < 1000:
-                        raise AudioInputError(error_handler.create_error("AUDIO_TOO_SHORT").error_info)
-            
-            # 执行识别（带重试）
-            last_error = None
-            for attempt in range(max_retries):
-                try:
-                    result = self.recognize_enhanced(audio_data, **kwargs)
-                    
-                    # 检查识别结果
-                    asr_error = error_handler.handle_asr_error(result)
-                    if asr_error and attempt < max_retries - 1:
-                        # 如果不是最后一次尝试，记录警告并重试
-                        self.logger.warning(f"ASR识别质量不佳，重试 {attempt + 1}/{max_retries}: {asr_error.error_info.message}")
-                        last_error = asr_error
-                        time.sleep(0.5 * (attempt + 1))  # 递增延迟
-                        continue
-                    elif asr_error:
-                        # 最后一次尝试仍然有问题，抛出错误
-                        raise asr_error
-                    
-                    # 识别成功
-                    if attempt > 0:
-                        self.logger.info(f"ASR识别在第 {attempt + 1} 次尝试后成功")
-                    
-                    return result
-                    
-                except (AudioInputError, SpeechRecognitionError):
-                    # 重新抛出已知错误
-                    raise
-                except Exception as e:
-                    last_error = error_handler.create_error("ASR_SERVICE_ERROR", 
-                                                          attempt=attempt + 1, 
-                                                          error_message=safe_str(e))
-                    if attempt < max_retries - 1:
-                        self.logger.warning(f"ASR服务错误，重试 {attempt + 1}/{max_retries}: {e}")
-                        time.sleep(1.0 * (attempt + 1))  # 递增延迟
-                        continue
-                    else:
-                        raise last_error
-            
-            # 如果所有重试都失败了
-            if last_error:
-                raise last_error
-            else:
+            with self._normalize_audio_input(audio_data, kwargs.get("sample_rate")) as audio_data:
+                if isinstance(audio_data, str):
+                    if not self.validate_audio_file(audio_data):
+                        raise error_handler.create_error("AUDIO_FORMAT_ERROR")
+                    try:
+                        self._read_audio_for_quality(audio_data, kwargs.get("sample_rate"))
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        raise error_handler.create_error("AUDIO_FORMAT_ERROR") from e
+                else:
+                    try:
+                        from ...utils.audio import AudioProcessor
+                        audio_array, sample_rate = self._read_audio_for_quality(
+                            audio_data, kwargs.get("sample_rate")
+                        )
+                        processor = AudioProcessor(sample_rate=sample_rate)
+                        validation_result = processor.validate_audio_input(audio_array)
+                        validation_error = error_handler.handle_audio_validation_error(validation_result)
+                        if validation_error:
+                            raise validation_error
+                    except ImportError:
+                        if isinstance(audio_data, bytes) and len(audio_data) < 1000:
+                            raise error_handler.create_error("AUDIO_TOO_SHORT")
+                    except AudioInputError:
+                        raise
+                    except (OSError, ValueError, RuntimeError) as e:
+                        raise error_handler.create_error("AUDIO_FORMAT_ERROR") from e
+
+                last_error = None
+                for attempt in range(max_retries):
+                    try:
+                        result = self.recognize_enhanced(audio_data, **kwargs)
+                        asr_error = error_handler.handle_asr_error(result)
+                        if asr_error and attempt < max_retries - 1:
+                            self.logger.warning(f"ASR识别质量不佳，重试 {attempt + 1}/{max_retries}: {asr_error.error_info.message}")
+                            last_error = asr_error
+                            time.sleep(0.5 * (attempt + 1))
+                            continue
+                        elif asr_error:
+                            raise asr_error
+
+                        if attempt > 0:
+                            self.logger.info(f"ASR识别在第 {attempt + 1} 次尝试后成功")
+                        return result
+
+                    except (AudioInputError, SpeechRecognitionError):
+                        raise
+                    except Exception as e:
+                        last_error = error_handler.create_error(
+                            "ASR_SERVICE_ERROR", attempt=attempt + 1,
+                            error_message=safe_str(e)
+                        )
+                        if attempt < max_retries - 1:
+                            self.logger.warning(f"ASR服务错误，重试 {attempt + 1}/{max_retries}: {e}")
+                            time.sleep(1.0 * (attempt + 1))
+                            continue
+                        else:
+                            raise last_error
+
+                if last_error:
+                    raise last_error
                 raise error_handler.create_error("ASR_SERVICE_ERROR")
                 
         except (AudioInputError, SpeechRecognitionError):
@@ -348,7 +426,7 @@ class ASRBase(ABC):
             self.logger.error(f"语音识别过程中发生未预期错误: {e}")
             raise error_handler.create_error("ASR_SERVICE_ERROR", error_message=safe_str(e))
 
-    def recognize_enhanced(self, audio_data: Union[bytes, str], **kwargs) -> ASRResult:
+    def recognize_enhanced(self, audio_data: Union[bytes, str, Tuple[int, Any]], **kwargs) -> ASRResult:
         """
         增强的语音识别方法，包含质量检测和置信度评估
         
@@ -368,10 +446,16 @@ class ASRBase(ABC):
         
         start_time = time.time()
         metadata = {}
-        
+
         try:
+            if isinstance(audio_data, tuple):
+                with self._normalize_audio_input(audio_data, kwargs.get("sample_rate")) as audio_path:
+                    return self.recognize_enhanced(audio_path, **kwargs)
+
             # 音频质量检测
             if self.enable_quality_check:
+                if isinstance(audio_data, bytes) and "sample_rate" in kwargs:
+                    metadata["sample_rate"] = kwargs["sample_rate"]
                 quality_score = self._assess_audio_quality(audio_data, metadata)
                 if quality_score < self.min_audio_quality:
                     raise ASRQualityError(
@@ -442,16 +526,12 @@ class ASRBase(ABC):
             try:
                 from ...utils.audio import AudioProcessor
                 
-                processor = AudioProcessor()
-                
-                # 如果是文件路径，读取音频数据
-                if isinstance(audio_data, str):
-                    audio_array, sample_rate = processor.read_audio_file(audio_data)
-                else:
-                    # 假设是16位PCM数据
-                    import numpy as np
-                    audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
-                
+                audio_array, sample_rate = self._read_audio_for_quality(
+                    audio_data, metadata.get("sample_rate")
+                )
+                processor = AudioProcessor(sample_rate=sample_rate)
+                metadata["sample_rate"] = sample_rate
+
                 # 使用AudioProcessor的验证功能
                 validation_result = processor.validate_audio_input(audio_array)
                 
@@ -602,9 +682,7 @@ class ASRBase(ABC):
             # 重复字符过多
             r'(.)\1{4,}',
             # 过多的标点符号
-            r'[。，！？]{3,}',
-            # 无意义的字符组合
-            r'[a-zA-Z]{10,}',  # 过长的英文字符串（在中文识别中）
+            r'[。，！？.,!?]{3,}',
             # 数字过多
             r'\d{10,}',
         ]

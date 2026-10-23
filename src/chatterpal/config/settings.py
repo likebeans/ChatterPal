@@ -6,6 +6,7 @@ This module provides a unified configuration management system that supports
 environment variables, configuration files, and type-safe configuration access.
 """
 
+import re
 from pathlib import Path
 from typing import Optional, Union
 
@@ -78,7 +79,13 @@ class Settings(BaseSettings):
         description="Whisper model size (tiny, base, small, medium, large)",
     )
     whisper_device: str = Field(
-        default="auto", description="Whisper device (auto, cpu, cuda)"
+        default="auto", description="Whisper device (auto, cpu, cuda, cuda:N)"
+    )
+    whisper_language: str = Field(
+        default="en", description="Whisper language (en, zh, auto for detection)"
+    )
+    whisper_max_cached_models: int = Field(
+        default=1, ge=1, le=4, description="Maximum cached Whisper models per adapter"
     )
     asr_provider: str = Field(
         default="whisper", description="ASR provider (whisper, alibaba)"
@@ -180,6 +187,42 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"Invalid Whisper model: {v}. Must be one of {valid_models}"
             )
+        return v
+
+    @field_validator("whisper_device")
+    @classmethod
+    def validate_whisper_device(cls, v: str) -> str:
+        """Validate supported devices without requiring accelerator hardware."""
+        if v == "mps":
+            raise ValueError(
+                "Whisper device 'mps' is unsupported by the current Whisper/PyTorch "
+                "runtime; use cpu or auto"
+            )
+        if v not in {"auto", "cpu", "cuda"} and not re.fullmatch(
+            r"cuda:(0|[1-9][0-9]*)", v
+        ):
+            raise ValueError(
+                "Whisper device must be one of: auto, cpu, cuda, cuda:N "
+                "(N must be a non-negative integer without leading zeros)"
+            )
+        return v
+
+    @field_validator("whisper_language")
+    @classmethod
+    def validate_whisper_language(cls, v: str) -> str:
+        """Keep the application language policy explicit."""
+        if v not in {"en", "zh", "auto"}:
+            raise ValueError("Whisper language must be one of: en, zh, auto")
+        return v
+
+    @field_validator("whisper_max_cached_models", mode="before")
+    @classmethod
+    def validate_whisper_max_cached_models(cls, v) -> int:
+        """Accept integer environment values without coercing floats or booleans."""
+        if isinstance(v, str) and re.fullmatch(r"[0-9]+", v):
+            return int(v)
+        if type(v) is not int:
+            raise ValueError("Whisper max_cached_models must be an integer from 1 to 4")
         return v
 
     @field_validator("asr_provider")
@@ -432,11 +475,14 @@ def get_audio_config() -> dict[str, Union[int, str, Path]]:
     }
 
 
-def get_model_config() -> dict[str, str]:
-    """Get model configuration as a dictionary."""
+def get_model_config() -> dict[str, Union[int, str]]:
+    """Get model configuration, including the configured Whisper runtime policy."""
     settings = get_settings()
     return {
         "whisper_model": settings.whisper_model,
+        "whisper_device": settings.whisper_device,
+        "whisper_language": settings.whisper_language,
+        "whisper_max_cached_models": settings.whisper_max_cached_models,
         "asr_provider": settings.asr_provider,
         "tts_provider": settings.tts_provider,
         "llm_provider": settings.llm_provider,
