@@ -15,10 +15,6 @@ import logging
 
 from ..config.settings import Settings, get_settings
 from ..config.loader import create_tts, create_asr, create_llm
-from ..core.asr.whisper import WhisperASR
-from ..core.asr.aliyun import AliyunASR
-from ..core.llm.alibaba import AlibabaBailianLLM
-from ..core.llm.openai import OpenAILLM
 from ..core.assessment.corrector import PronunciationCorrector
 from ..services.chat import ChatService
 from ..services.evaluation import EvaluationService
@@ -43,24 +39,7 @@ class ChatterPalApp:
     def _init_core_components(self):
         """Initialize core ASR, TTS, LLM, and assessment components."""
         try:
-            # Initialize ASR
-            if self.settings.asr_provider == "whisper":
-                self.asr = WhisperASR(
-                    {
-                        "model_size": self.settings.whisper_model,
-                        "device": self.settings.whisper_device,
-                    }
-                )
-            elif self.settings.asr_provider == "aliyun":
-                self.asr = AliyunASR(
-                    {
-                        "access_key_id": self.settings.alibaba_api_key,
-                        "access_key_secret": self.settings.alibaba_api_secret,
-                    }
-                )
-            else:
-                # Default to Whisper
-                self.asr = WhisperASR({})
+            self.asr = create_asr(self.settings)
 
             # Initialize TTS using configuration loader
             self.tts = create_tts(self.settings)
@@ -71,36 +50,7 @@ class ChatterPalApp:
             else:
                 self.logger.warning("TTS instance is None - no voice synthesis will be available")
 
-            # Initialize LLM
-            if self.settings.llm_provider == "alibaba":
-                # Get API key from settings or environment variable
-                import os
-                api_key = (
-                    self.settings.alibaba_api_key or 
-                    self.settings.dashscope_api_key or 
-                    os.getenv("DASHSCOPE_API_KEY") or 
-                    os.getenv("ALIBABA_API_KEY")
-                )
-                
-                self.llm = AlibabaBailianLLM(
-                    {
-                        "api_key": api_key,
-                        "model": self.settings.alibaba_model,
-                    }
-                )
-            elif self.settings.llm_provider == "openai":
-                self.llm = OpenAILLM(
-                    {
-                        "api_key": self.settings.openai_api_key,
-                        "model": self.settings.openai_model,
-                        "base_url": self.settings.openai_base_url,
-                    }
-                )
-            else:
-                # Default to Alibaba
-                self.llm = AlibabaBailianLLM(
-                    {"api_key": self.settings.alibaba_api_key}
-                )
+            self.llm = create_llm(self.settings)
 
             # Initialize assessment components
             self.pronunciation_corrector = PronunciationCorrector()
@@ -370,7 +320,7 @@ class ChatterPalApp:
 
             # Default launch parameters
             launch_params = {
-                "server_name": "0.0.0.0",
+                "server_name": self.settings.gradio_server_name,
                 "server_port": self.settings.gradio_port,
                 "share": self.settings.gradio_share,
                 "show_error": True,

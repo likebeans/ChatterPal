@@ -6,12 +6,11 @@ This module provides a unified configuration management system that supports
 environment variables, configuration files, and type-safe configuration access.
 """
 
-import os
 from pathlib import Path
 from typing import Optional, Union
-from pydantic import BaseModel, Field, field_validator, computed_field
-from pydantic_settings import BaseSettings
-from dotenv import load_dotenv
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -24,41 +23,45 @@ class Settings(BaseSettings):
     3. Environment variables
     """
 
-    # API Configuration
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",  # Allow legacy/shared .env entries that have no application consumer.
+    )
+
+    # Legacy keys remain accepted; DashScope and ASR can use separate credentials.
     alibaba_api_key: str = Field(
-        default="", description="Alibaba Cloud API key for speech services"
+        default="", description="Legacy DashScope API key or ASR access key ID"
     )
     alibaba_api_secret: str = Field(
-        default="", description="Alibaba Cloud API secret for speech services"
+        default="", description="Legacy ASR access key secret (not needed for LLM/TTS)"
     )
+    aliyun_asr_app_key: str = Field(default="", description="Aliyun NLS application key")
+    aliyun_asr_token: str = Field(default="", description="Aliyun NLS token (optional with access keys)")
+    aliyun_asr_access_key_id: str = Field(default="", description="Aliyun NLS access key ID")
+    aliyun_asr_access_key_secret: str = Field(default="", description="Aliyun NLS access key secret")
     openai_api_key: Optional[str] = Field(
         default=None, description="OpenAI API key (optional)"
     )
     openai_base_url: Optional[str] = Field(
-        default=None, description="OpenAI API base URL (optional)"
+        default=None, description="OpenAI full chat-completions endpoint URL (optional)"
     )
     openai_model: str = Field(default="gpt-3.5-turbo", description="OpenAI model name")
-    alibaba_model: str = Field(default="qwen-turbo", description="Alibaba model name")
-    
+    alibaba_model: str = Field(default="qwen-plus", description="Alibaba model name")
+
     # Additional Alibaba Configuration
     dashscope_api_key: Optional[str] = Field(
-        default=None, description="DashScope API key (alias for alibaba_api_key)"
+        default=None, description="DashScope API key for LLM/TTS; takes precedence over the legacy key"
     )
-    alibaba_base_url: Optional[str] = Field(
-        default=None, description="Alibaba API base URL"
+    alibaba_base_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        description="Alibaba OpenAI-compatible API base URL",
     )
-    alibaba_max_tokens: Optional[int] = Field(
-        default=None, description="Alibaba max tokens"
-    )
-    alibaba_temperature: Optional[float] = Field(
-        default=None, description="Alibaba temperature"
-    )
-    alibaba_top_p: Optional[float] = Field(
-        default=None, description="Alibaba top_p"
-    )
-    alibaba_enable_search: Optional[bool] = Field(
-        default=None, description="Alibaba enable search"
-    )
+    alibaba_max_tokens: int = Field(default=2000, gt=0, description="Alibaba max tokens")
+    alibaba_temperature: float = Field(default=0.7, description="Alibaba temperature")
+    alibaba_top_p: float = Field(default=0.8, description="Alibaba top_p")
+    alibaba_enable_search: bool = Field(default=False, description="Alibaba enable search")
 
     # Audio Configuration
     audio_sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
@@ -111,13 +114,13 @@ class Settings(BaseSettings):
         default="longxiaochun", description="Alibaba TTS voice (longxiaochun for cosyvoice-v1)"
     )
     alibaba_tts_volume: int = Field(
-        default=50, description="Alibaba TTS volume (0-100)"
+        default=50, ge=0, le=100, description="Alibaba TTS volume (0-100)"
     )
-    alibaba_tts_speech_rate: int = Field(
-        default=0, description="Alibaba TTS speech rate (-500 to 500)"
+    alibaba_tts_speech_rate: float = Field(
+        default=1.0, ge=0.5, le=2.0, description="CosyVoice speech rate multiplier (0.5-2.0)"
     )
-    alibaba_tts_pitch_rate: int = Field(
-        default=0, description="Alibaba TTS pitch rate (-500 to 500)"
+    alibaba_tts_pitch_rate: float = Field(
+        default=1.0, ge=0.5, le=2.0, description="CosyVoice pitch multiplier (0.5-2.0)"
     )
 
     # Web Interface Configuration
@@ -159,11 +162,6 @@ class Settings(BaseSettings):
         default="localhost,127.0.0.1",
         description="Comma-separated list of allowed hosts",
     )
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
 
     @field_validator("whisper_model")
     @classmethod
@@ -310,6 +308,44 @@ class Settings(BaseSettings):
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
 
+    def get_dashscope_api_key(self) -> str:
+        """Resolve the current DashScope key, with support for the legacy name."""
+        return self.dashscope_api_key or self.alibaba_api_key
+
+    def get_aliyun_asr_config(self) -> dict[str, str]:
+        """Use the names accepted by AliyunASR and keep legacy access keys working."""
+        return {
+            "appkey": self.aliyun_asr_app_key,
+            "token": self.aliyun_asr_token,
+            "access_key_id": self.aliyun_asr_access_key_id or self.alibaba_api_key,
+            "access_key_secret": self.aliyun_asr_access_key_secret or self.alibaba_api_secret,
+        }
+
+    def has_aliyun_asr_credentials(self) -> bool:
+        config = self.get_aliyun_asr_config()
+        return bool(
+            config["appkey"]
+            and (config["token"] or (config["access_key_id"] and config["access_key_secret"]))
+        )
+
+    def get_configuration_errors(self) -> list[str]:
+        """Report only credentials needed by the selected providers."""
+        errors = []
+        if self.asr_provider == "alibaba" and not self.has_aliyun_asr_credentials():
+            errors.append(
+                "Alibaba ASR requires ALIYUN_ASR_APP_KEY and either ALIYUN_ASR_TOKEN "
+                "or ALIYUN_ASR_ACCESS_KEY_ID + ALIYUN_ASR_ACCESS_KEY_SECRET "
+                "(legacy ALIBABA_API_KEY + ALIBABA_API_SECRET are also accepted)."
+            )
+        if (self.llm_provider == "alibaba" or self.tts_provider == "alibaba") and not self.get_dashscope_api_key():
+            errors.append(
+                "Alibaba LLM/TTS requires DASHSCOPE_API_KEY "
+                "(legacy ALIBABA_API_KEY is also accepted); no ASR secret is required."
+            )
+        if self.llm_provider == "openai" and not self.openai_api_key:
+            errors.append("OpenAI LLM requires OPENAI_API_KEY.")
+        return errors
+
     def validate_config(self) -> bool:
         """
         Validate configuration settings.
@@ -318,25 +354,11 @@ class Settings(BaseSettings):
             True if configuration is valid, False otherwise
         """
         try:
-            # Check required API keys based on providers
-            if self.asr_provider == "alibaba":
-                if not self.alibaba_api_key or not self.alibaba_api_secret:
-                    print(
-                        "❌ Alibaba API credentials are required when using Alibaba ASR"
-                    )
-                    return False
-
-            if self.llm_provider == "alibaba":
-                if not self.alibaba_api_key or not self.alibaba_api_secret:
-                    print(
-                        "❌ Alibaba API credentials are required when using Alibaba LLM"
-                    )
-                    return False
-
-            if self.llm_provider == "openai":
-                if not self.openai_api_key:
-                    print("❌ OpenAI API key is required when using OpenAI LLM")
-                    return False
+            errors = self.get_configuration_errors()
+            if errors:
+                for error in errors:
+                    print(error)
+                return False
 
             # Ensure directories exist
             self.ensure_directories()
@@ -365,19 +387,14 @@ def get_settings(reload: bool = False) -> Settings:
     global _settings
 
     if _settings is None or reload:
-        # Always try to load from project root first
-        project_root = Path(__file__).parent.parent.parent.parent
-        env_file = project_root / ".env"
-        
-        if env_file.exists():
-            load_dotenv(env_file, override=True)
-        else:
-            # Fallback to current directory
-            env_file = Path(".env")
-            if env_file.exists():
-                load_dotenv(env_file, override=True)
+        # Let pydantic-settings merge dotenv below the process environment.
+        # Never copy dotenv values into os.environ: reloads must see edits/removals.
+        env_file = Path.cwd() / ".env"
+        if not env_file.is_file():
+            project_root = Path(__file__).resolve().parents[3]
+            env_file = project_root / ".env"
 
-        _settings = Settings()
+        _settings = Settings(_env_file=env_file)
         _settings.ensure_directories()
 
     return _settings
@@ -400,6 +417,7 @@ def get_api_config() -> dict[str, str]:
     return {
         "alibaba_api_key": settings.alibaba_api_key,
         "alibaba_api_secret": settings.alibaba_api_secret,
+        "dashscope_api_key": settings.get_dashscope_api_key(),
         "openai_api_key": settings.openai_api_key or "",
     }
 

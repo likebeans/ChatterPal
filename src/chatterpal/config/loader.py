@@ -64,7 +64,8 @@ def validate_api_keys() -> Dict[str, bool]:
     settings = get_settings()
 
     validation_results = {
-        "alibaba": bool(settings.alibaba_api_key and settings.alibaba_api_secret),
+        "alibaba": bool(settings.get_dashscope_api_key()),
+        "alibaba_asr": settings.has_aliyun_asr_credentials(),
         "openai": bool(settings.openai_api_key),
     }
 
@@ -80,20 +81,9 @@ def check_required_config() -> None:
     """
     settings = get_settings()
 
-    # Check based on selected providers
-    if settings.asr_provider == "alibaba" or settings.llm_provider == "alibaba":
-        if not settings.alibaba_api_key or not settings.alibaba_api_secret:
-            raise ConfigurationError(
-                "Alibaba API key and secret are required when using Alibaba services. "
-                "Please set ALIBABA_API_KEY and ALIBABA_API_SECRET environment variables."
-            )
-
-    if settings.llm_provider == "openai":
-        if not settings.openai_api_key:
-            raise ConfigurationError(
-                "OpenAI API key is required when using OpenAI services. "
-                "Please set OPENAI_API_KEY environment variable."
-            )
+    errors = settings.get_configuration_errors()
+    if errors:
+        raise ConfigurationError(" ".join(errors))
 
 
 def get_config_summary() -> Dict[str, Any]:
@@ -199,15 +189,18 @@ def print_config_status() -> None:
         print("API Keys Status:")
         api_status = summary["api_keys_configured"]
         print(
-            f"  Alibaba Cloud: {'✓ Configured' if api_status['alibaba'] else '✗ Missing'}"
+            f"  Alibaba DashScope (LLM/TTS): {'Configured' if api_status['alibaba'] else 'Missing'}"
         )
+        print(f"  Alibaba ASR: {'Configured' if api_status['alibaba_asr'] else 'Missing'}")
         print(f"  OpenAI: {'✓ Configured' if api_status['openai'] else '✗ Missing'}")
         print()
 
         # Check for potential issues
         issues = []
-        if summary["providers"]["asr"] == "alibaba" and not api_status["alibaba"]:
-            issues.append("Alibaba ASR selected but API keys not configured")
+        if summary["providers"]["asr"] == "alibaba" and not api_status["alibaba_asr"]:
+            issues.append("Alibaba ASR selected but speech credentials are not configured")
+        if summary["providers"]["tts"] == "alibaba" and not api_status["alibaba"]:
+            issues.append("Alibaba TTS selected but DashScope API key is not configured")
         if summary["providers"]["llm"] == "alibaba" and not api_status["alibaba"]:
             issues.append("Alibaba LLM selected but API keys not configured")
         if summary["providers"]["llm"] == "openai" and not api_status["openai"]:
@@ -244,7 +237,7 @@ def create_tts(settings: Optional[Settings] = None):
         
         return AlibabaTTS(
             {
-                "api_key": settings.alibaba_api_key,
+                "api_key": settings.get_dashscope_api_key(),
                 "voice": "cosyvoice-v1",  # 使用cosyvoice模型
                 "voice_name": settings.alibaba_tts_voice,
                 "volume": settings.alibaba_tts_volume,
@@ -266,19 +259,14 @@ def create_asr(settings: Optional[Settings] = None):
         
         return WhisperASR(
             {
-                "model": settings.whisper_model,
-                "device": "auto"
+                "model_size": settings.whisper_model,
+                "device": settings.whisper_device,
             }
         )
     elif settings.asr_provider == "alibaba":
         from chatterpal.core.asr.aliyun import AliyunASR
         
-        return AliyunASR(
-            {
-                "api_key": settings.alibaba_api_key,
-                "api_secret": settings.alibaba_api_secret
-            }
-        )
+        return AliyunASR(settings.get_aliyun_asr_config())
     else:
         raise ValueError(f"Unsupported ASR provider: {settings.asr_provider}")
 
@@ -295,7 +283,7 @@ def create_llm(settings: Optional[Settings] = None):
             {
                 "api_key": settings.openai_api_key,
                 "model": settings.openai_model,
-                "base_url": settings.openai_base_url
+                "base_url": settings.openai_base_url or "https://api.openai.com/v1/chat/completions",
             }
         )
     elif settings.llm_provider == "alibaba":
@@ -303,8 +291,13 @@ def create_llm(settings: Optional[Settings] = None):
         
         return AlibabaBailianLLM(
             {
-                "api_key": settings.alibaba_api_key,
-                "model": settings.alibaba_model
+                "api_key": settings.get_dashscope_api_key(),
+                "model": settings.alibaba_model,
+                "base_url": settings.alibaba_base_url,
+                "max_tokens": settings.alibaba_max_tokens,
+                "temperature": settings.alibaba_temperature,
+                "top_p": settings.alibaba_top_p,
+                "enable_search": settings.alibaba_enable_search,
             }
         )
     else:

@@ -7,6 +7,8 @@
 import json
 import time
 import threading
+from dataclasses import dataclass, field
+from functools import partial
 from typing import Optional, Dict, Any
 
 try:
@@ -16,6 +18,15 @@ except ImportError:
 
 from .base import ASRBase, ASRError
 from ...utils.encoding_fix import safe_str
+
+
+@dataclass
+class _RecognitionState:
+    """Callback state owned by one transcriber, including late callbacks."""
+
+    result: Optional[str] = None
+    error: Optional[str] = None
+    completed: threading.Event = field(default_factory=threading.Event)
 
 
 class AliyunASR(ASRBase):
@@ -43,7 +54,7 @@ class AliyunASR(ASRBase):
 
         if not nls:
             raise ImportError(
-                "阿里云语音识别SDK未安装，请运行: pip install alibabacloud-nls"
+                "阿里云语音识别SDK未安装，请运行: pip install alibabacloud-nls-python-sdk"
             )
 
         self.appkey = self.config.get("appkey")
@@ -59,11 +70,6 @@ class AliyunASR(ASRBase):
         self.sample_rate = self.config.get("sample_rate", 16000)
         self.enable_punctuation = self.config.get("enable_punctuation", True)
         self.enable_itn = self.config.get("enable_itn", True)
-
-        # 识别结果
-        self.result = None
-        self.error = None
-        self.completed = False
 
         # 如果没有token但有密钥，尝试获取token
         if not self.token and self.access_key_id and self.access_key_secret:
@@ -142,10 +148,8 @@ class AliyunASR(ASRBase):
             )
             enable_itn = kwargs.get("enable_itn", self.enable_itn)
 
-            # 重置状态
-            self.result = None
-            self.error = None
-            self.completed = False
+            # 每个识别器持有独立状态，避免并发或延迟回调串扰
+            state = _RecognitionState()
 
             # 创建识别器
             transcriber = nls.NlsSpeechTranscriber(
@@ -156,9 +160,9 @@ class AliyunASR(ASRBase):
                 on_sentence_begin=self._on_sentence_begin,
                 on_sentence_end=self._on_sentence_end,
                 on_result_changed=self._on_result_changed,
-                on_completed=self._on_completed,
-                on_error=self._on_error,
-                on_close=self._on_close,
+                on_completed=partial(self._on_completed, state=state),
+                on_error=partial(self._on_error, state=state),
+                on_close=partial(self._on_close, state=state),
             )
 
             # 开始识别
@@ -195,15 +199,12 @@ class AliyunASR(ASRBase):
             transcriber.stop()
 
             # 等待结果
-            timeout = 30  # 30秒超时
-            start_time = time.time()
-            while not self.completed and (time.time() - start_time) < timeout:
-                time.sleep(0.1)
+            state.completed.wait(timeout=30)
 
-            if self.error:
-                raise ASRError(f"阿里云语音识别失败: {self.error}")
+            if state.error:
+                raise ASRError(f"阿里云语音识别失败: {state.error}")
 
-            return self.result
+            return state.result
 
         except ASRError:
             raise
@@ -287,29 +288,29 @@ class AliyunASR(ASRBase):
         except Exception as e:
             self.logger.warning(f"解析中间结果失败: {e}")
 
-    def _on_completed(self, message, *args):
+    def _on_completed(self, message, *args, state: _RecognitionState):
         """识别完成回调"""
         try:
             msg_dict = json.loads(message)
             if "payload" in msg_dict and "result" in msg_dict["payload"]:
-                self.result = msg_dict["payload"]["result"]
-                self.logger.info(f"识别完成: {self.result}")
-            self.completed = True
+                state.result = msg_dict["payload"]["result"]
+                self.logger.info(f"识别完成: {state.result}")
         except Exception as e:
             self.logger.error(f"解析最终结果失败: {e}")
-            self.error = safe_str(e)
-            self.completed = True
+            state.error = safe_str(e)
+        finally:
+            state.completed.set()
 
-    def _on_error(self, message, *args):
+    def _on_error(self, message, *args, state: _RecognitionState):
         """错误回调"""
         self.logger.error(f"识别错误: {message}")
-        self.error = message
-        self.completed = True
+        state.error = message
+        state.completed.set()
 
-    def _on_close(self, *args):
+    def _on_close(self, *args, state: _RecognitionState):
         """连接关闭回调"""
         self.logger.debug("连接已关闭")
-        self.completed = True
+        state.completed.set()
 
 
 # 便捷函数

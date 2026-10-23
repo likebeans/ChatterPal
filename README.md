@@ -122,67 +122,67 @@ ChatterPal 提供智能化的发音纠错服务：
 
 ### 环境要求
 
-- Python 3.8+
-- 4GB+ RAM
-- 网络连接（用于API服务）
+- Python **3.12+**；推荐使用 `.python-version` 指定的 **3.12**，与 `pyproject.toml` 保持一致
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)、Git；运行 React 前端还需 Node.js 20+ 和 npm
+- 4GB+ RAM，以及下载 Whisper 模型和访问 API 服务所需的网络连接
+- 原生音频依赖：FFmpeg 和 PortAudio。macOS 使用 `brew install ffmpeg portaudio`；Ubuntu/Debian 使用 `sudo apt-get install build-essential portaudio19-dev ffmpeg libsndfile1`。Windows 请安装 FFmpeg 并加入 PATH，使用 64 位 Python 3.12 以便安装 PyAudio wheel；若仍需源码编译，请参考[部署指南](docs/deployment.md#原生依赖与安装失败排查)
+
+也可以使用下方的 Docker Compose 部署，由镜像安装 Linux 原生依赖。
 
 ### 安装步骤
 
-#### 1. 克隆项目
+#### 1. 克隆项目并安装依赖
+
+以下命令在 macOS、Linux 和 Windows PowerShell 中均可使用，不需要手动激活虚拟环境：
+
 ```bash
-git clone https://github.com/your-org/chatterpal.git
-cd chatterpal
+git clone https://github.com/likebeans/ChatterPal.git
+cd ChatterPal
+uv python install 3.12
+uv sync --locked --python 3.12
 ```
 
-#### 2. 安装依赖（推荐使用 uv）
+#### 2. 配置环境变量
+
+macOS / Linux：
+
 ```bash
-# 安装 uv（如果尚未安装）
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 创建虚拟环境并安装依赖
-uv sync
-
-# 激活虚拟环境
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-```
-
-#### 3. 配置环境变量
-```bash
-# 复制环境变量模板
 cp .env.example .env
-
-# 编辑 .env 文件，填入你的API密钥
-# 详细配置说明请参考 docs/deployment.md
 ```
 
-#### 4. 启动应用
+Windows PowerShell：
 
-##### 启动后端API服务
-```bash
-# 启动后端API服务器（推荐）
-uv run .\scripts\run_api.py
-
-# 或使用传统Gradio界面
-uv run python -m chatterpal.web.app
+```powershell
+Copy-Item .env.example .env
 ```
 
-##### 启动前端服务
+编辑 `.env`，填入 `DASHSCOPE_API_KEY`。默认组合是 Whisper ASR、Edge TTS 和阿里百炼 LLM，仅需百炼 API Key；无需设置阿里云 ASR 的 AccessKey Secret。模板是环境变量的起点，字段含义、覆盖顺序和高级聊天配置见[部署指南](docs/deployment.md#配置契约)。
+
+#### 3. 启动后端与前端
+
+在仓库根目录启动后端：
+
 ```bash
-# 进入前端目录
+uv run python scripts/run_api.py
+```
+
+另开终端，在仓库根目录启动 React 前端：
+
+```bash
 cd frontend
-
-# 安装前端依赖
-npm install
-
-# 启动前端开发服务器
+npm ci
 npm run dev
 ```
 
-##### 访问应用
-- **API服务器**: http://localhost:8010 （后端API）
-- **前端界面**: http://localhost:3010 （现代化React界面）
-- **Gradio界面**: http://localhost:7860 （传统界面）
-- **API文档**: http://localhost:8010/docs （Swagger文档）
+访问 http://localhost:3010；后端 API 地址为 http://localhost:8010，API 文档为 http://localhost:8010/docs，健康检查为 http://localhost:8010/health。
+
+如需传统 Gradio 界面，可在仓库根目录单独启动：
+
+```bash
+uv run python -m chatterpal.web.app
+```
+
+Gradio 地址为 http://localhost:7860。首次使用本地 Whisper 会下载所选模型。
 
 ## 核心功能
 
@@ -407,33 +407,25 @@ ChatterPal/
 
 ## 🚀 部署和使用
 
-### 🐳 Docker部署 (推荐)
-```bash
-# 克隆项目
-git clone https://github.com/your-org/chatterpal.git
-cd chatterpal
+### Docker Compose
 
-# 使用Docker Compose启动
-docker-compose up -d
+先按[快速开始](#快速开始)克隆仓库并复制、编辑 `.env`，再在仓库根目录运行：
+
+```bash
+docker compose up --build -d
+docker compose ps
 ```
 
-### 📱 本地开发
-```bash
-# 后端启动
-uv sync
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python scripts/run.py
+仓库中的 [docker-compose.yml](docker-compose.yml)、[Dockerfile](Dockerfile) 和前端容器配置定义了实际部署方式：默认启动后端 API（8010）和静态 React 前端（3010）。具体服务、持久化目录、可选 Gradio 启动方式与检查命令见[部署指南](docs/deployment.md#docker-compose-部署)。
 
-# 前端启动 (新终端)
-cd frontend
-npm install
-npm run dev
-```
+### 本地开发
 
-### 🌐 访问应用
-- **Gradio界面**: http://localhost:7860
-- **React前端**: http://localhost:5173
-- **API文档**: http://localhost:7860/docs
+使用[快速开始](#快速开始)中的 Python 和前端命令。在仓库根目录执行 `uv sync --dev` 可安装测试与格式化工具。
+
+- **React 前端**：http://localhost:3010
+- **后端 API 文档**：http://localhost:8010/docs
+- **后端健康检查**：http://localhost:8010/health
+- **Gradio**：http://localhost:7860（需单独启动）
 
 ## 🤝 贡献指南
 
@@ -480,11 +472,11 @@ pytest --cov=chatterpal --cov-report=html
 
 ## 🔗 相关链接
 
-- **📂 项目主页**: [GitHub Repository](https://github.com/your-org/chatterpal)
-- **🐛 问题反馈**: [GitHub Issues](https://github.com/your-org/chatterpal/issues)
+- **📂 项目主页**: [GitHub Repository](https://github.com/likebeans/ChatterPal)
+- **🐛 问题反馈**: [GitHub Issues](https://github.com/likebeans/ChatterPal/issues)
 - **📖 在线文档**: [Documentation](https://chatterpal.readthedocs.io)
 - **🎮 在线演示**: [Live Demo](https://aistudio.baidu.com/aistudio/projectdetail/6566149)
-- **💬 讨论社区**: [GitHub Discussions](https://github.com/your-org/chatterpal/discussions)
+- **💬 讨论社区**: [GitHub Discussions](https://github.com/likebeans/ChatterPal/discussions)
 
 ## 🏆 致谢
 

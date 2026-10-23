@@ -5,9 +5,12 @@ Edge TTS语音合成实现
 """
 
 import asyncio
-import tempfile
 import os
-from typing import Optional, Dict, Any, List
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar
 
 try:
     import edge_tts
@@ -15,6 +18,17 @@ except ImportError:
     edge_tts = None
 
 from .base import TTSBase, TTSError
+
+
+_Result = TypeVar("_Result")
+_FALLBACK_VOICES = {
+    "en-US-AriaNeural": "Female",
+    "en-US-JennyNeural": "Female",
+    "en-US-GuyNeural": "Male",
+    "zh-CN-XiaoxiaoNeural": "Female",
+    "zh-CN-YunxiNeural": "Male",
+    "zh-CN-YunjianNeural": "Male",
+}
 
 
 class EdgeTTS(TTSBase):
@@ -42,8 +56,31 @@ class EdgeTTS(TTSBase):
         self.rate = self.config.get("rate", "+0%")
         self.pitch = self.config.get("pitch", "+0Hz")
         self.volume = self.config.get("volume", "+0%")
+        self._voices: Optional[List[Dict[str, Any]]] = None
+        self._voice_aliases: Dict[str, str] = {}
+        self._voices_lock = threading.Lock()
+        self._voices_retry_at = 0.0
 
         self.logger.info(f"EdgeTTS初始化完成，语音: {self.voice}")
+
+    @staticmethod
+    def _run_async(factory: Callable[[], Coroutine[Any, Any, _Result]]) -> _Result:
+        """Keep the synchronous interface usable when the caller has a loop.
+
+        Create the coroutine in the thread that runs it so a rejected nested
+        asyncio.run cannot leave an unawaited coroutine behind. Async callers
+        should offload the whole synchronous method to avoid blocking their loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(factory())
+
+        def run() -> _Result:
+            return asyncio.run(factory())
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(run).result()
 
     def synthesize(self, text: str, **kwargs) -> bytes:
         """
@@ -84,8 +121,8 @@ class EdgeTTS(TTSBase):
 
             try:
                 # 异步合成语音
-                success = asyncio.run(
-                    self._async_synthesize_to_file(
+                success = self._run_async(
+                    lambda: self._async_synthesize_to_file(
                         cleaned_text, temp_path, voice, rate, pitch, volume
                     )
                 )
@@ -147,8 +184,8 @@ class EdgeTTS(TTSBase):
             volume = kwargs.get("volume", self.volume)
 
             # 异步合成语音
-            success = asyncio.run(
-                self._async_synthesize_to_file(
+            success = self._run_async(
+                lambda: self._async_synthesize_to_file(
                     cleaned_text, output_path, voice, rate, pitch, volume
                 )
             )
@@ -276,21 +313,69 @@ class EdgeTTS(TTSBase):
         Returns:
             支持的语音列表
         """
-        try:
-            # 异步获取语音列表
-            voices = asyncio.run(self._async_get_voices())
-            return [voice["Name"] for voice in voices]
-        except Exception as e:
-            self.logger.error(f"获取语音列表失败: {e}")
-            # 返回一些常用的语音
-            return [
-                "en-US-AriaNeural",
-                "en-US-JennyNeural",
-                "en-US-GuyNeural",
-                "zh-CN-XiaoxiaoNeural",
-                "zh-CN-YunxiNeural",
-                "zh-CN-YunjianNeural",
-            ]
+        return [voice["name"] for voice in self._get_voice_catalog()]
+
+    @staticmethod
+    def _default_voice_info(voice_name: str) -> Dict[str, Any]:
+        locale = "-".join(voice_name.split("-")[:2])
+        return {
+            "name": voice_name,
+            "display_name": voice_name,
+            "local_name": voice_name,
+            "gender": _FALLBACK_VOICES.get(voice_name, "Unknown"),
+            "locale": locale,
+            "language": locale,
+            "sample_rate": 24000,
+            "voice_type": "Neural",
+        }
+
+    def _get_voice_catalog(self) -> List[Dict[str, Any]]:
+        """Share a catalog across list/metadata calls, including concurrent routes."""
+        with self._voices_lock:
+            if self._voices is not None and time.monotonic() < self._voices_retry_at:
+                return self._voices
+
+            try:
+                voices = self._run_async(self._async_get_voices)
+                catalog = []
+                aliases = {}
+                for voice in voices:
+                    name = voice.get("ShortName") or voice.get("Name")
+                    if not name:
+                        continue
+                    if voice.get("Name"):
+                        aliases[voice["Name"]] = name
+                    info = self._default_voice_info(name)
+                    info.update(
+                        {
+                            "display_name": voice.get("DisplayName")
+                            or voice.get("FriendlyName")
+                            or name,
+                            "local_name": voice.get("LocalName") or name,
+                            "gender": voice.get("Gender") or "Unknown",
+                            "locale": voice.get("Locale") or info["locale"],
+                            "language": voice.get("Language")
+                            or voice.get("Locale")
+                            or info["language"],
+                            "sample_rate": voice.get("SampleRateHertz", 24000),
+                            "voice_type": voice.get("VoiceType") or "Neural",
+                        }
+                    )
+                    catalog.append(info)
+                self._voices = catalog
+                self._voice_aliases = aliases
+                self._voices_retry_at = time.monotonic() + 3600.0
+            except Exception as e:
+                self.logger.error(f"获取语音列表失败: {e}")
+                # Keep a previously loaded catalog during an outage. Briefly
+                # cache failures so metadata lookups do not retry for every voice.
+                if self._voices is None:
+                    self._voices = [
+                        self._default_voice_info(name) for name in _FALLBACK_VOICES
+                    ]
+                self._voices_retry_at = time.monotonic() + 30.0
+
+            return self._voices
 
     async def _async_get_voices(self) -> List[Dict]:
         """
@@ -361,36 +446,13 @@ class EdgeTTS(TTSBase):
         """
         target_voice = voice_name or self.voice
 
-        try:
-            voices = asyncio.run(self._async_get_voices())
+        catalog = self._get_voice_catalog()
+        target_voice = self._voice_aliases.get(target_voice, target_voice)
+        for voice in catalog:
+            if voice["name"] == target_voice:
+                return voice.copy()
 
-            for voice in voices:
-                if voice.get("Name") == target_voice:
-                    return {
-                        "name": voice.get("Name", ""),
-                        "display_name": voice.get("DisplayName", ""),
-                        "local_name": voice.get("LocalName", ""),
-                        "gender": voice.get("Gender", ""),
-                        "locale": voice.get("Locale", ""),
-                        "language": voice.get("Language", ""),
-                        "sample_rate": voice.get("SampleRateHertz", 0),
-                        "voice_type": voice.get("VoiceType", ""),
-                    }
-
-        except Exception as e:
-            self.logger.error(f"获取语音信息失败: {e}")
-
-        # 返回默认信息
-        return {
-            "name": target_voice,
-            "display_name": target_voice,
-            "local_name": target_voice,
-            "gender": "Unknown",
-            "locale": "en-US",
-            "language": "English",
-            "sample_rate": 24000,
-            "voice_type": "Neural",
-        }
+        return self._default_voice_info(target_voice)
 
 
 # 便捷函数

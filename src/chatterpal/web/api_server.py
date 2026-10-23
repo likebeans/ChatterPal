@@ -8,6 +8,7 @@ import sys
 import logging
 import asyncio
 import tempfile
+import uuid
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
@@ -24,10 +25,6 @@ if os.name == 'nt':  # Windows
 
 from ..config.settings import Settings, get_settings
 from ..config.loader import create_tts, create_asr, create_llm
-from ..core.asr.whisper import WhisperASR
-from ..core.asr.aliyun import AliyunASR
-from ..core.llm.alibaba import AlibabaBailianLLM
-from ..core.llm.openai import OpenAILLM
 from ..core.assessment.corrector import PronunciationCorrector
 from ..services.chat import ChatService
 from ..services.evaluation import EvaluationService
@@ -134,53 +131,15 @@ class APIServer:
     def _init_core_components(self):
         """初始化核心组件"""
         try:
-            # 初始化ASR
-            if self.settings.asr_provider == "whisper":
-                self.asr = WhisperASR({
-                    "model_size": self.settings.whisper_model,
-                    "device": self.settings.whisper_device,
-                })
-            elif self.settings.asr_provider == "aliyun":
-                self.asr = AliyunASR({
-                    "access_key_id": self.settings.alibaba_api_key,
-                    "access_key_secret": self.settings.alibaba_api_secret,
-                })
-            else:
-                self.asr = WhisperASR({})
+            # 通过统一工厂初始化，保持API与其他入口的配置行为一致
+            self.asr = create_asr(self.settings)
             
             # 初始化TTS
             self.tts = create_tts(self.settings)
             self.logger.info(f"TTS initialized: {type(self.tts).__name__ if self.tts else 'None'}")
             
             # 初始化LLM
-            if self.settings.llm_provider == "alibaba":
-                import os
-                api_key = (
-                    self.settings.alibaba_api_key or 
-                    self.settings.dashscope_api_key or 
-                    os.getenv("DASHSCOPE_API_KEY") or 
-                    os.getenv("ALIBABA_API_KEY")
-                )
-                
-                self.llm = AlibabaBailianLLM({
-                    "api_key": api_key,
-                    "model": self.settings.alibaba_model,
-                })
-            elif self.settings.llm_provider == "openai":
-                self.llm = OpenAILLM({
-                    "api_key": self.settings.openai_api_key,
-                    "model": self.settings.openai_model,
-                    "base_url": self.settings.openai_base_url,
-                })
-            else:
-                # 默认使用Alibaba
-                import os
-                api_key = (
-                    self.settings.alibaba_api_key or 
-                    self.settings.dashscope_api_key or 
-                    os.getenv("DASHSCOPE_API_KEY")
-                )
-                self.llm = AlibabaBailianLLM({"api_key": api_key})
+            self.llm = create_llm(self.settings)
             
             # 初始化评估组件
             self.corrector = PronunciationCorrector()
@@ -268,7 +227,7 @@ class APIServer:
                 if self.tts and response_text:
                     try:
                         # 生成音频文件
-                        audio_filename = f"response_{session_id}_{int(asyncio.get_event_loop().time())}.wav"
+                        audio_filename = f"response_{uuid.uuid4().hex}.wav"
                         audio_path = self.temp_dir / audio_filename
                         
                         # 设置音色
@@ -276,7 +235,9 @@ class APIServer:
                             self.tts.set_voice(request.voice)
                         
                         # 合成语音到文件
-                        success = self.tts.synthesize_to_file(response_text, str(audio_path))
+                        success = await asyncio.to_thread(
+                            self.tts.synthesize_to_file, response_text, str(audio_path)
+                        )
                         if success:
                             audio_url = f"/api/audio/{audio_filename}"
                         else:
@@ -304,9 +265,10 @@ class APIServer:
             voice: str = Form("longxiaochun")
         ):
             """语音聊天接口"""
+            audio_path = None
             try:
                 # 保存上传的音频文件（前端现在直接发送WAV格式）
-                audio_filename = f"input_{int(asyncio.get_event_loop().time())}.wav"
+                audio_filename = f"input_{uuid.uuid4().hex}.wav"
                 audio_path = self.temp_dir / audio_filename
                 
                 with open(audio_path, "wb") as f:
@@ -333,7 +295,8 @@ class APIServer:
                     self.tts.set_voice(voice)
                 
                 # 处理语音聊天获取AI回复（已包含TTS处理）
-                response_text, response_audio, session_id = self.chat_service.chat_with_audio(
+                response_text, response_audio, session_id = await asyncio.to_thread(
+                    self.chat_service.chat_with_audio,
                     audio_data=str(audio_path),
                     session_id=session_id,
                     return_audio=True
@@ -343,7 +306,7 @@ class APIServer:
                 audio_url = None
                 if response_audio:
                     try:
-                        response_audio_filename = f"response_{session_id}_{int(asyncio.get_event_loop().time())}.wav"
+                        response_audio_filename = f"response_{uuid.uuid4().hex}.wav"
                         response_audio_path = self.temp_dir / response_audio_filename
                         
                         # 保存音频数据到文件
@@ -353,12 +316,6 @@ class APIServer:
                         
                     except Exception as e:
                         self.logger.warning(f"保存音频文件失败: {e}")
-                
-                # 清理临时文件
-                try:
-                    os.unlink(audio_path)
-                except:
-                    pass
                 
                 return {
                     "recognized_text": recognized_text,  # 用户语音识别结果
@@ -370,7 +327,13 @@ class APIServer:
             except Exception as e:
                 self.logger.error(f"语音聊天处理失败: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
-        
+            finally:
+                if audio_path is not None:
+                    try:
+                        audio_path.unlink(missing_ok=True)
+                    except OSError as e:
+                        self.logger.warning(f"清理上传音频失败: {e}")
+
         self.logger.info("语音聊天路由已注册")
         
         @self.app.post("/api/pronunciation/analyze", response_model=PronunciationAnalysisResponse)
@@ -531,8 +494,8 @@ class APIServer:
         self.logger.info("场景列表路由已注册")
         
         @self.app.get("/api/voices", response_model=List[VoiceInfo])
-        async def get_voices():
-            """获取可用音色列表"""
+        def get_voices():
+            """获取可用音色列表（同步TTS调用由FastAPI在线程池中运行）"""
             try:
                 voices = []
                 if self.tts and hasattr(self.tts, 'get_supported_voices'):

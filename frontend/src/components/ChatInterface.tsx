@@ -87,7 +87,7 @@ const ChatInterface: React.FC = () => {
     setIsLoading(true)
 
     try {
-      const response = await axios.post('http://localhost:8010/api/chat', {
+      const response = await axios.post('/api/chat', {
         message: textToSend,
         voice: selectedVoice,
         session_id: sessionId
@@ -148,7 +148,7 @@ const ChatInterface: React.FC = () => {
         formData.append('session_id', sessionId)
       }
       
-      const response = await axios.post('http://localhost:8010/api/chat/audio', formData, {
+      const response = await axios.post('/api/chat/audio', formData, {
         headers: {
           'Content-Type': 'multipart/form-data'
         }

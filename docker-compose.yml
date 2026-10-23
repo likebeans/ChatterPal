@@ -1,0 +1,78 @@
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: chatterpal-backend:local
+  env_file:
+    - ${CHATTERPAL_ENV_FILE:-.env}
+  environment: &python-environment
+    # Keep storage inside the mounted directories, regardless of host .env paths.
+    XDG_CACHE_HOME: /app/.cache
+    CACHE_DIR: /app/.cache
+    MODEL_CACHE_DIR: /app/data/models
+    AUDIO_TEMP_DIR: /app/temp_audio
+    TMPDIR: /app/temp_audio
+  volumes:
+    # Whisper uses XDG_CACHE_HOME/whisper, not MODEL_CACHE_DIR.
+    - model-cache:/app/.cache
+    - app-data:/app/data
+    - audio:/app/temp_audio
+    - logs:/app/logs
+    - preferences:/app/.config/chatterpal
+  restart: unless-stopped
+  init: true
+
+services:
+  backend:
+    <<: *python-service
+    ports:
+      - "8010:8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "3010:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  gradio:
+    <<: *python-service
+    profiles: ["gradio"]
+    command: ["python", "-m", "chatterpal.web.app"]
+    environment:
+      <<: *python-environment
+      GRADIO_PORT: "7860"
+      GRADIO_SHARE: "false"
+      GRADIO_SERVER_NAME: "0.0.0.0"
+    ports:
+      - "7860:7860"
+    healthcheck:
+      # Gradio has no /health route; check its actual UI entry point.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 300s
+
+volumes:
+  model-cache:
+  app-data:
+  audio:
+  logs:
+  preferences:
