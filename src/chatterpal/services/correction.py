@@ -32,6 +32,7 @@ class CorrectionReport:
 
     def __init__(self):
         self.overall_score = 0.0
+        self.recognized_text = ""
         self.pronunciation_errors = []
         self.prosody_issues = []
         self.phoneme_problems = []
@@ -43,6 +44,7 @@ class CorrectionReport:
         """转换为字典格式"""
         return {
             "overall_score": self.overall_score,
+            "recognized_text": self.recognized_text,
             "pronunciation_errors": self.pronunciation_errors,
             "prosody_issues": self.prosody_issues,
             "phoneme_problems": self.phoneme_problems,
@@ -136,7 +138,9 @@ class CorrectionService:
                     recognized_text = self._recognize_audio(audio_data)
                     self.logger.info(f"语音识别结果: {recognized_text}")
                 except Exception as e:
-                    self.logger.warning(f"语音识别失败: {e}")
+                    raise AssessmentError(f"语音识别失败: {e}") from e
+                if not isinstance(recognized_text, str) or not recognized_text.strip():
+                    raise AssessmentError("语音识别未返回有效文本")
 
             # 2. 基础发音评估
             base_assessment = self.corrector.assess(audio_data, target_text)
@@ -180,7 +184,7 @@ class CorrectionService:
 
         except Exception as e:
             self.logger.error(f"综合纠错分析失败: {e}")
-            raise AssessmentError(f"综合纠错分析失败: {e}")
+            raise AssessmentError(f"综合纠错分析失败: {e}") from e
 
     def _recognize_audio(self, audio_data: Union[str, bytes, Tuple[int, Any]]) -> str:
         """语音识别"""
@@ -204,6 +208,7 @@ class CorrectionService:
 
         report = CorrectionReport()
         report.overall_score = base_assessment.overall_score
+        report.recognized_text = recognized_text
 
         # 1. 发音错误检测
         report.pronunciation_errors = self._detect_pronunciation_errors(
