@@ -184,36 +184,66 @@ class ChatterPalApp:
                     label="💬 文本输入",
                     placeholder="请在此输入您想要对话的内容...",
                     lines=2,
+                    info="Shift+Enter 发送，Enter 换行",
                 )
             with gr.Column(scale=1):
                 send_btn = gr.Button(value="📤 发送", variant="primary")
-        
-        chatbot = gr.Chatbot(label="💬 对话记录", height=400)
-        
+                clear_btn = gr.Button(value="清空对话", variant="secondary")
+
+        session_state = gr.State(value=None)
+        chatbot = gr.Chatbot(label="💬 对话记录", height=400, type="tuples")
+
         # Audio output component for TTS
         audio_output = gr.Audio(
-            label="🔊 AI语音回复", 
+            label="🔊 AI语音回复",
             autoplay=True,
             show_download_button=True,
             show_share_button=False
         )
-        
-        # Real chat function using ChatService with TTS support
-        def chat_response(message, history, selected_voice):
-            if not message:
-                return history, "", (22050, [])
-            
+
+        def turn_completed(session_id, previous_messages, message):
+            messages = self.chat_service.get_conversation_history(session_id)
+            return (
+                len(messages) == len(previous_messages) + 2
+                and messages[:-2] == previous_messages
+                and messages[-2].get("role") == "user"
+                and messages[-2].get("content") == message
+                and messages[-1].get("role") == "assistant"
+            )
+
+        def restore_history(session_id, previous_messages):
+            session = self.chat_service.get_session(session_id)
+            if session is None or session.get_messages() == previous_messages:
+                return
+            self.chat_service.clear_conversation_history(session_id)
+            for previous in previous_messages:
+                metadata = {
+                    key: value for key, value in previous.items()
+                    if key not in {"role", "content"}
+                }
+                if previous["role"] == "user":
+                    session.add_user_message(previous["content"], **metadata)
+                elif previous["role"] == "assistant":
+                    session.add_assistant_message(previous["content"], **metadata)
+
+        def chat_response(message, history, selected_voice, session_id):
+            history = list(history or [])
+            if not message or not message.strip():
+                return history, "", None, session_id
+
+            previous_messages = None
             try:
-                # Use the chat service to get AI response with TTS
-                # Create a default session if none exists
-                session_id = "default_web_session"
-                
+                # Keep the service session ID in this browser's Gradio state.
+                if not session_id or self.chat_service.get_session(session_id) is None:
+                    session_id = self.chat_service.create_session()
+                    history = []
+                previous_messages = self.chat_service.get_conversation_history(session_id)
+
                 # Update TTS voice if different from current
                 if hasattr(self.tts, 'voice_name') and self.tts.voice_name != selected_voice:
                     self.logger.info(f"Switching TTS voice from {self.tts.voice_name} to {selected_voice}")
                     self.tts.voice_name = selected_voice
-                
-                # Call process_chat method to enable TTS
+
                 audio_output_data, updated_history = self.chat_service.process_chat(
                     audio=None,
                     text_input=message,
@@ -221,20 +251,54 @@ class ChatterPalApp:
                     use_text_input=True,
                     session_id=session_id
                 )
-                
-                # Return updated history and audio output
-                return updated_history, "", audio_output_data
-                
+
+                # process_chat reports provider failures as a single error row.
+                if not turn_completed(session_id, previous_messages, message):
+                    restore_history(session_id, previous_messages)
+                    return history + updated_history, "", None, session_id
+
+                # The service uses an empty tuple payload when no audio is available.
+                if (
+                    isinstance(audio_output_data, tuple)
+                    and len(audio_output_data) == 2
+                    and len(audio_output_data[1]) == 0
+                ):
+                    audio_output_data = None
+                return updated_history, "", audio_output_data, session_id
+
             except Exception as e:
                 self.logger.error(f"Chat error: {safe_str(e)}")
+                if previous_messages is not None and not turn_completed(
+                    session_id, previous_messages, message
+                ):
+                    restore_history(session_id, previous_messages)
                 error_msg = f"抱歉，处理您的消息时出现错误：{safe_str(e)}\n\n请检查API密钥配置是否正确。"
-                history.append([message, error_msg])
-                return history, "", (22050, [])
-        
-        send_btn.click(
-            chat_response,
-            inputs=[text_input, chatbot, voice_selector],
-            outputs=[chatbot, text_input, audio_output]
+                return history + [[message, error_msg]], "", None, session_id
+
+        def clear_chat(session_id):
+            if session_id:
+                self.chat_service.delete_session(session_id)
+            return [], "", None, None
+
+        outputs = [chatbot, text_input, audio_output, session_state]
+        gr.on(
+            triggers=[send_btn.click, text_input.submit],
+            fn=chat_response,
+            inputs=[text_input, chatbot, voice_selector, session_state],
+            outputs=outputs,
+            api_name="chat_response",
+            concurrency_id="gradio_chat",
+            concurrency_limit=1,
+        )
+        # Clear after any pending send, so a late reply cannot restore the old chat.
+        gr.on(
+            triggers=[clear_btn.click, chatbot.clear],
+            fn=clear_chat,
+            inputs=[session_state],
+            outputs=outputs,
+            api_name="clear_chat",
+            concurrency_id="gradio_chat",
+            concurrency_limit=1,
         )
 
     def _create_score_interface(self):
