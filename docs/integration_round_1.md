@@ -2,6 +2,8 @@
 
 日期：2026-10-23。分支：`integrate/optimization-round-1`。工作区：`/Users/dd_y/Code/learn/ChatterPal-integration`。
 
+> 本文封存首次验收结果。后续对这 36 项失败的修复、重新测量的覆盖率及新一轮联合验收结果，见 [`integration_recovery.md`](integration_recovery.md)；下文的失败清单与日志保留为历史证据。
+
 聊天基线与 A–E 已按约定顺序集成，联合验收已执行完毕，集成修复保存为 `575164f`。**整体门槛未通过**：后端仍有 36 项失败，覆盖率 73.76% 低于 80%。前端、受控真实 API 联调、Gradio 会话事件及 ARM64 Docker 部署检查通过；这不消除全仓阻塞。
 
 | 验收项 | 最终结果 |

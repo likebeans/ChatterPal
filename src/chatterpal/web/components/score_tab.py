@@ -2,7 +2,6 @@
 """Score tab component for pronunciation evaluation."""
 
 import gradio as gr
-from typing import Optional
 from ...services.evaluation import EvaluationService
 from ...utils.encoding_fix import safe_str
 
@@ -19,15 +18,15 @@ class ScoreTab:
         with gr.Tab("Score") as tab:
             gr.Markdown(
                 """
-                ## 📊 发音评分系统
-                
-                基于AI的智能发音评价系统，帮助您提升英语发音质量。
-                
-                **评估维度：**
-                - 🎯 **发音准确性**：与标准发音的匹配度
-                - 🗣️ **语法正确性**：句子结构和语法使用
-                - 📚 **词汇使用**：词汇选择的恰当性
-                - 🌊 **流畅度**：语音的连贯性和自然度
+                ## 发音练习反馈
+
+                根据语音识别、文本对比和可用的分析服务提供练习反馈。
+                评分尚未校准，仅供练习参考，不代表专业发音测评。
+
+                **报告内容：**
+                - 目标文本与语音识别结果
+                - 服务返回的发音、流畅度、韵律和内容参考评分
+                - 分析反馈与练习建议；缺失的分析会明确标注
                 
                 **使用方法：**
                 1. 在文本框中输入要练习的英文句子
@@ -46,8 +45,9 @@ class ScoreTab:
                         info="输入标准的英文文本，系统将基于此文本评估您的发音",
                     )
 
-                    audio_input = gr.Microphone(
-                        label="🎤 录制发音", info="请清晰地朗读上方的文本内容"
+                    audio_input = gr.Audio(
+                        sources=["microphone"], type="numpy",
+                        label="🎤 录制发音（请清晰地朗读练习文本）",
                     )
 
                     evaluate_btn = gr.Button(
@@ -65,32 +65,12 @@ class ScoreTab:
             with gr.Accordion("💡 评分说明", open=False):
                 gr.Markdown(
                     """
-                    ### 评分标准 (满分10分)
-                    
-                    **9-10分 (优秀)**
-                    - 发音清晰准确，接近母语水平
-                    - 语法完全正确，词汇使用恰当
-                    - 语调自然，流畅度极佳
-                    
-                    **7-8分 (良好)**
-                    - 发音基本准确，偶有小错误
-                    - 语法正确，词汇使用合适
-                    - 语调较自然，流畅度良好
-                    
-                    **5-6分 (中等)**
-                    - 发音可理解，但有明显错误
-                    - 语法基本正确，词汇使用一般
-                    - 语调略显生硬，流畅度一般
-                    
-                    **3-4分 (需改进)**
-                    - 发音错误较多，影响理解
-                    - 语法有错误，词汇使用不当
-                    - 语调不自然，流畅度较差
-                    
-                    **1-2分 (需大幅改进)**
-                    - 发音错误严重，难以理解
-                    - 语法错误较多，词汇使用混乱
-                    - 语调生硬，流畅度很差
+                    ### 参考评分说明
+
+                    服务报告使用 0–100 分。当前评分尚未经过校准，
+                    部分数值可能来自文本对比、模型推断或后端默认值，
+                    不能据此判断真人发音水平或认定达到母语水平。
+                    未提供的音素或声学分析会标为不可用；没有问题条目不代表没有问题。
                     """
                 )
 
@@ -115,10 +95,33 @@ class ScoreTab:
 
             # Process evaluation
             result = self.evaluation_service.evaluate_pronunciation(
-                text_input=text_input.strip(), audio_input=audio_input
+                audio_data=audio_input, target_text=text_input.strip()
             )
 
-            return result
+            lines = [
+                "参考评分（未校准，仅供练习参考；可能包含模型推断或默认值）",
+                f"目标文本: {result.target_text}",
+                f"识别文本: {result.recognized_text}",
+                f"综合评分: {result.overall_score:.1f}/100",
+                f"发音准确性: {result.pronunciation_score:.1f}/100",
+                f"流畅度: {result.fluency_score:.1f}/100",
+                f"韵律: {result.prosody_score:.1f}/100",
+                f"内容准确性: {result.accuracy_score:.1f}/100",
+                "\n服务反馈:",
+                result.feedback or "暂无反馈",
+                "\n改进建议:",
+                *(f"- {suggestion}" for suggestion in result.suggestions),
+            ]
+            if self.evaluation_service.assessment is None:
+                lines.append("\n声学分析不可用：未配置声学评估模块。")
+            if result.phoneme_analysis:
+                lines.extend(["\n音素分析:", *(
+                    f"- {item.phoneme}: {item.description}"
+                    for item in result.phoneme_analysis
+                )])
+            else:
+                lines.append("\n音素分析不可用：本次报告未提供音素分析结果。")
+            return "\n".join(lines)
 
         except Exception as e:
             return f"❌ 评价过程出错: {safe_str(e)}\n\n请检查输入内容并重试。"

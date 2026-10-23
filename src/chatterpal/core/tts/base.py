@@ -8,9 +8,14 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass
 from enum import Enum
-import logging
-import os
+import base64
+import glob
 import hashlib
+import json
+import logging
+import math
+import os
+import tempfile
 import time
 import threading
 
@@ -99,8 +104,8 @@ class TTSBase(ABC):
         self._current_audio = None
         self._playback_callbacks = []
         
-        # 初始化缓存目录
-        if self.cache_dir:
+        # 初始化可选的磁盘缓存；失败时保留内存缓存。
+        if self.enable_cache and self.cache_dir:
             self._init_cache_dir()
 
     @abstractmethod
@@ -231,6 +236,7 @@ class TTSBase(ABC):
             cached_result = self._get_from_cache(cleaned_text, kwargs)
             if cached_result:
                 self.logger.info(f"TTS缓存命中: {cleaned_text[:50]}...")
+                self._auto_play_result(cached_result)
                 return cached_result
         
         # 执行合成（带重试）
@@ -272,15 +278,6 @@ class TTSBase(ABC):
                     }
                 )
                 
-                # 保存到缓存
-                if self.enable_cache:
-                    self._save_to_cache(cleaned_text, result, kwargs)
-                
-                if attempt > 0:
-                    self.logger.info(f"TTS合成在第 {attempt + 1} 次尝试后成功")
-                
-                return result
-                
             except SpeechSynthesisError:
                 # 重新抛出已知错误
                 raise
@@ -301,71 +298,96 @@ class TTSBase(ABC):
                         "text_length": len(cleaned_text)
                     })
                     raise last_error
-        
+
+            # 合成已成功；缓存和播放失败都不能触发重新合成。
+            if self.enable_cache:
+                try:
+                    self._save_to_cache(cleaned_text, result, kwargs)
+                except Exception as e:
+                    self.logger.warning(f"缓存保存失败: {e}")
+            if attempt > 0:
+                self.logger.info(f"TTS合成在第 {attempt + 1} 次尝试后成功")
+            self._auto_play_result(result)
+            return result
+
         # 如果所有重试都失败了
         if last_error:
             raise last_error
         else:
             raise error_handler.create_error("TTS_SERVICE_ERROR")
 
+    def _auto_play_result(self, result: TTSResult) -> None:
+        """可选播放失败时仍保留并返回已合成的音频。"""
+        if not self.auto_play:
+            return
+        try:
+            if self.play_audio(result.audio_data):
+                return
+            self.logger.warning("自动播放失败，保留已合成的音频")
+        except Exception as e:
+            self.logger.warning(f"自动播放失败，保留已合成的音频: {e}")
+        self._playback_state = PlaybackState.ERROR
+
     def _get_from_cache(self, text: str, kwargs: Dict[str, Any]) -> Optional[TTSResult]:
-        """从缓存获取合成结果"""
+        """从内存或磁盘获取结果，损坏或过期的缓存视为未命中。"""
+        if not self.enable_cache or self.cache_size_limit <= 0:
+            return None
         try:
             cache_key = self._generate_cache_key(text, kwargs)
-            
             with self._cache_lock:
-                if cache_key in self._cache:
-                    entry = self._cache[cache_key]
-                    
-                    # 检查缓存是否过期
-                    if time.time() - entry.created_at > self.cache_ttl:
-                        del self._cache[cache_key]
-                        return None
-                    
-                    # 更新访问信息
-                    entry.access_count += 1
-                    entry.last_accessed = time.time()
-                    
-                    # 创建结果对象
-                    return TTSResult(
-                        text=text,
-                        audio_data=entry.audio_data,
-                        duration=self._estimate_audio_duration(entry.audio_data),
-                        format=self.config.get("audio_format", "wav"),
-                        sample_rate=self.config.get("sample_rate", 16000),
-                        cached=True,
-                        synthesis_time=0.0,
-                        metadata=entry.metadata
-                    )
-            
-            return None
-            
+                entry = self._cache.get(cache_key)
+                if entry is None:
+                    entry = self._load_from_disk_cache(cache_key)
+                if entry is None:
+                    return None
+
+                now = time.time()
+                if now - entry.created_at > self.cache_ttl:
+                    self._cache.pop(cache_key, None)
+                    self._remove_from_disk_cache(cache_key)
+                    return None
+
+                if cache_key not in self._cache:
+                    self._evict_cache_entries(cache_key)
+                    self._cache[cache_key] = entry
+                entry.access_count += 1
+                entry.last_accessed = now
+                self._save_to_disk_cache(entry)
+
+                return TTSResult(
+                    text=text,
+                    audio_data=entry.audio_data,
+                    duration=self._estimate_audio_duration(entry.audio_data),
+                    format=self.config.get("audio_format", "wav"),
+                    sample_rate=self.config.get("sample_rate", 16000),
+                    cached=True,
+                    synthesis_time=0.0,
+                    metadata=entry.metadata.copy()
+                )
         except Exception as e:
             self.logger.warning(f"缓存读取失败: {e}")
             return None
 
     def _save_to_cache(self, text: str, result: TTSResult, kwargs: Dict[str, Any]) -> None:
-        """保存结果到缓存"""
+        """保存结果到内存和可选的磁盘缓存。"""
+        if not self.enable_cache or self.cache_size_limit <= 0:
+            return
         try:
             cache_key = self._generate_cache_key(text, kwargs)
-            
             with self._cache_lock:
-                # 检查缓存大小限制
-                if len(self._cache) >= self.cache_size_limit:
-                    self._evict_cache_entries()
-                
-                # 创建缓存条目
+                if cache_key not in self._cache:
+                    self._evict_cache_entries(cache_key)
+                now = time.time()
                 entry = CacheEntry(
                     key=cache_key,
                     audio_data=result.audio_data,
                     metadata=result.metadata.copy(),
-                    created_at=time.time(),
+                    created_at=now,
                     access_count=1,
-                    last_accessed=time.time()
+                    last_accessed=now
                 )
-                
                 self._cache[cache_key] = entry
-                
+                self._save_to_disk_cache(entry)
         except Exception as e:
             self.logger.warning(f"缓存保存失败: {e}")
 
@@ -375,35 +397,36 @@ class TTSBase(ABC):
         key_data = f"{text}|{sorted(kwargs.items())}"
         return hashlib.md5(key_data.encode()).hexdigest()
 
-    def _evict_cache_entries(self) -> None:
-        """清理缓存条目"""
-        # 按最后访问时间排序，删除最旧的条目
-        if not self._cache:
-            return
-        
-        # 删除过期条目
+    def _evict_cache_entries(self, incoming_key: Optional[str] = None) -> None:
+        """为新条目腾出空间，同时清理内存和磁盘中的过期或冷门记录。"""
+        entries = self._cache.copy()
+        if self.cache_dir:
+            try:
+                cache_files = glob.glob(os.path.join(self.cache_dir, "*.cache"))
+                for cache_file in cache_files:
+                    key = os.path.basename(cache_file)[:-6]
+                    if key not in entries and key != incoming_key:
+                        entry = self._load_from_disk_cache(key)
+                        if entry is not None:
+                            entries[key] = entry
+            except OSError as e:
+                self.logger.warning(f"扫描磁盘缓存失败: {e}")
+
         current_time = time.time()
-        expired_keys = [
-            key for key, entry in self._cache.items()
-            if current_time - entry.created_at > self.cache_ttl
-        ]
-        
-        for key in expired_keys:
-            del self._cache[key]
-        
-        # 如果还是超过限制，删除最少使用的条目
-        if len(self._cache) >= self.cache_size_limit:
-            # 按访问次数和最后访问时间排序
-            sorted_entries = sorted(
-                self._cache.items(),
-                key=lambda x: (x[1].access_count, x[1].last_accessed)
-            )
-            
-            # 删除最少使用的条目
-            entries_to_remove = len(self._cache) - self.cache_size_limit + 1
-            for i in range(min(entries_to_remove, len(sorted_entries))):
-                key = sorted_entries[i][0]
-                del self._cache[key]
+        for key, entry in list(entries.items()):
+            if current_time - entry.created_at > self.cache_ttl:
+                entries.pop(key)
+                self._cache.pop(key, None)
+                self._remove_from_disk_cache(key)
+
+        candidates = sorted(
+            ((key, entry) for key, entry in entries.items() if key != incoming_key),
+            key=lambda item: (item[1].access_count, item[1].last_accessed)
+        )
+        entries_to_remove = max(0, len(candidates) - self.cache_size_limit + 1)
+        for key, _ in candidates[:entries_to_remove]:
+            self._cache.pop(key, None)
+            self._remove_from_disk_cache(key)
 
     def _estimate_audio_duration(self, audio_data: bytes) -> float:
         """估算音频时长"""
@@ -524,40 +547,6 @@ class TTSBase(ABC):
         """
         # 默认返回空列表，子类应该重写此方法
         return []
-
-    def test_connection(self) -> bool:
-        """
-        测试TTS服务连接
-        
-        Returns:
-            连接是否正常
-        """
-        try:
-            # 尝试合成一个简短的测试文本
-            test_text = "Hello"
-            audio_data = self.synthesize(test_text)
-            return audio_data is not None and len(audio_data) > 0
-        except Exception as e:
-            self.logger.error(f"TTS连接测试失败: {e}")
-            return False
-
-    def clear_cache(self) -> None:
-        """清空缓存"""
-        with self._cache_lock:
-            self._cache.clear()
-        self.logger.info("TTS缓存已清空")
-
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """获取缓存统计信息"""
-        with self._cache_lock:
-            total_size = sum(len(entry.audio_data) for entry in self._cache.values())
-            return {
-                "cache_entries": len(self._cache),
-                "cache_size_bytes": total_size,
-                "cache_size_mb": total_size / (1024 * 1024),
-                "cache_limit": self.cache_size_limit,
-                "cache_ttl": self.cache_ttl
-            }
 
     def get_supported_formats(self) -> List[str]:
         """
@@ -682,22 +671,108 @@ class TTSBase(ABC):
 
         return info
 
-    def _save_to_disk_cache(self, entry: CacheEntry) -> None:
-        """
-        保存到磁盘缓存
-        
-        Args:
-            entry: 缓存条目
-        """
+    def _init_cache_dir(self) -> None:
+        """初始化可选缓存目录，目录不可用时退回内存缓存。"""
         try:
-            import pickle
-            
+            os.makedirs(self.cache_dir, exist_ok=True)
+        except (OSError, TypeError, ValueError) as e:
+            self.logger.warning(f"初始化磁盘缓存失败，使用内存缓存: {e}")
+            self.cache_dir = None
+
+    def _load_from_disk_cache(self, cache_key: str) -> Optional[CacheEntry]:
+        """只读取经过验证的 JSON 数据，不反序列化可执行对象。"""
+        if not self.cache_dir:
+            return None
+        try:
+            cache_file = os.path.join(self.cache_dir, f"{cache_key}.cache")
+            with open(cache_file, "r", encoding="utf-8") as source:
+                data = json.load(source)
+            if (
+                not isinstance(data, dict)
+                or type(data.get("version")) is not int
+                or data["version"] != 1
+                or data.get("key") != cache_key
+                or not isinstance(data.get("metadata"), dict)
+                or not isinstance(data.get("audio_data"), str)
+                or type(data.get("access_count")) is not int
+                or data["access_count"] < 1
+                or any(
+                    type(data.get(field)) not in (int, float)
+                    or not math.isfinite(data[field])
+                    for field in ("created_at", "last_accessed")
+                )
+            ):
+                raise ValueError("缓存数据格式无效")
+            audio_data = base64.b64decode(data["audio_data"], validate=True)
+            if (
+                not audio_data
+                or hashlib.sha256(audio_data).hexdigest() != data.get("sha256")
+            ):
+                raise ValueError("缓存音频数据无效")
+            return CacheEntry(
+                key=cache_key,
+                audio_data=audio_data,
+                metadata=data["metadata"],
+                created_at=data["created_at"],
+                access_count=data["access_count"],
+                last_accessed=data["last_accessed"]
+            )
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            self.logger.warning(f"读取磁盘缓存失败，忽略该条目: {e}")
+            self._remove_from_disk_cache(cache_key)
+            return None
+
+    def _remove_from_disk_cache(self, cache_key: str) -> None:
+        if not self.cache_dir:
+            return
+        try:
+            os.unlink(os.path.join(self.cache_dir, f"{cache_key}.cache"))
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            self.logger.warning(f"删除磁盘缓存失败: {e}")
+
+    def _save_to_disk_cache(self, entry: CacheEntry) -> None:
+        """在同一目录写入临时文件，再原子替换完整的缓存记录。"""
+        if not self.cache_dir:
+            return
+        temp_path = None
+        try:
+            payload = json.dumps(
+                {
+                    "version": 1,
+                    "key": entry.key,
+                    "audio_data": base64.b64encode(entry.audio_data).decode("ascii"),
+                    "sha256": hashlib.sha256(entry.audio_data).hexdigest(),
+                    "metadata": entry.metadata,
+                    "created_at": entry.created_at,
+                    "access_count": entry.access_count,
+                    "last_accessed": entry.last_accessed
+                },
+                ensure_ascii=False,
+                allow_nan=False
+            )
             cache_file = os.path.join(self.cache_dir, f"{entry.key}.cache")
-            with open(cache_file, "wb") as f:
-                pickle.dump(entry, f)
-                
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.cache_dir, suffix=".tmp", delete=False
+            ) as output:
+                temp_path = output.name
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temp_path, cache_file)
         except Exception as e:
             self.logger.warning(f"保存到磁盘缓存失败: {e}")
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    self.logger.warning(f"清理缓存临时文件失败: {e}")
 
     def clear_cache(self) -> None:
         """
@@ -705,17 +780,11 @@ class TTSBase(ABC):
         """
         with self._cache_lock:
             self._cache.clear()
-            
-        # 清空磁盘缓存
-        if self.cache_dir and os.path.exists(self.cache_dir):
-            try:
-                import glob
-                cache_files = glob.glob(os.path.join(self.cache_dir, "*.cache"))
-                for cache_file in cache_files:
-                    os.unlink(cache_file)
-                self.logger.info("TTS缓存已清空")
-            except Exception as e:
-                self.logger.error(f"清空磁盘缓存失败: {e}")
+            if self.cache_dir:
+                for cache_file in glob.glob(os.path.join(self.cache_dir, "*.cache")):
+                    key = os.path.basename(cache_file)[:-6]
+                    self._remove_from_disk_cache(key)
+        self.logger.info("TTS缓存已清空")
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """

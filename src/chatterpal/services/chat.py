@@ -331,9 +331,14 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
 
         try:
             # 使用增强的语音识别（带错误处理和重试）
-            asr_result = self.asr.recognize_with_error_handling(
-                audio_data, max_retries=max_retries, **kwargs
-            )
+            try:
+                asr_result = self.asr.recognize_with_error_handling(
+                    audio_data, max_retries=max_retries, **kwargs
+                )
+            except ChatModuleError:
+                raise
+            except Exception as e:
+                raise error_handler.handle_asr_exception(e) from e
             
             recognized_text = asr_result.text
             if not recognized_text:
@@ -703,7 +708,7 @@ Topics:"""
             if use_text_input:
                 # 文本输入模式
                 if not text_input.strip():
-                    raise error_handler.create_error("AUDIO_FORMAT_ERROR", message="文本输入不能为空")
+                    raise error_handler.create_error("TEXT_INPUT_EMPTY")
                 
                 user_input = text_input
                 response_text, _ = self.chat_with_text(text_input, session_id)

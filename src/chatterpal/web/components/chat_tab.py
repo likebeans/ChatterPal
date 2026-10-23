@@ -68,16 +68,22 @@ class ChatTab:
                         value="🗑️ 清除上下文", variant="secondary"
                     )
 
+            # Use the saved mode for both visible controls and the hidden state.
+            initial_mode = self.preferences.get_input_mode()
+            use_text_initial = initial_mode == "text"
+
             # Input mode selection section
             with gr.Row():
                 with gr.Column(scale=2):
                     input_mode_status = gr.Markdown(
-                        value="**当前输入模式:** 📝 文本输入",
+                        value=("**当前输入模式:** 📝 文本输入" if use_text_initial
+                               else "**当前输入模式:** 🎤 语音输入"),
                         elem_id="input_mode_status"
                     )
                 with gr.Column(scale=1):
                     input_mode_toggle = gr.Button(
-                        value="🎤 切换到语音输入", 
+                        value=("🎤 切换到语音输入" if use_text_initial
+                               else "📝 切换到文本输入"),
                         variant="secondary",
                         size="sm"
                     )
@@ -85,13 +91,10 @@ class ChatTab:
             # Input section
             with gr.Row():
                 with gr.Column(scale=4):
-                    # 从用户偏好加载初始输入模式
-                    initial_mode = self.preferences.get_input_mode()
-                    use_text_initial = (initial_mode == "text")
-                    
                     # Audio and text inputs (visibility controlled by mode)
-                    audio_input = gr.Microphone(
-                        label="🎤 语音输入", 
+                    audio_input = gr.Audio(
+                        sources=["microphone"], type="numpy",
+                        label="🎤 语音输入",
                         visible=not use_text_initial
                     )
                     text_input = gr.Textbox(
@@ -194,11 +197,11 @@ class ChatTab:
                                     scale=1,
                                     interactive=False
                                 )
-                                page_info = gr.Markdown(
-                                    value="**第 1 页，共 1 页**",
-                                    elem_id="page_info",
-                                    scale=2
-                                )
+                                with gr.Column(scale=2):
+                                    page_info = gr.Markdown(
+                                        value="**第 1 页，共 1 页**",
+                                        elem_id="page_info",
+                                    )
                                 next_page_btn = gr.Button(
                                     value="➡️ 下一页",
                                     variant="secondary",
@@ -223,9 +226,10 @@ class ChatTab:
             )
 
             send_btn.click(
-                fn=self._handle_chat,
+                fn=self._handle_chat_messages,
                 inputs=[audio_input, text_input, chatbot, use_text_input],
                 outputs=[audio_output, chatbot],
+                api_name="_handle_chat",
             )
 
             clear_context_btn.click(
@@ -347,6 +351,42 @@ class ChatTab:
             chat_history.append({"role": "user", "content": user_input_display})
             chat_history.append({"role": "assistant", "content": error_msg})
             return (22050, []), chat_history
+
+    @staticmethod
+    def _as_messages(history: List) -> List:
+        """Convert legacy pairs or service messages to visible Gradio messages."""
+        messages = []
+        for item in history or []:
+            if isinstance(item, dict):
+                if item.get("role") in {"user", "assistant"}:
+                    messages.append({"role": item["role"], "content": item["content"]})
+            else:
+                user, assistant = item
+                if user is not None:
+                    messages.append({"role": "user", "content": user})
+                if assistant is not None:
+                    messages.append({"role": "assistant", "content": assistant})
+        return messages
+
+    def _handle_chat_messages(self, audio, text_input: str, chat_history: List, use_text: bool):
+        """Adapt the legacy callback to the messages-mode widget boundary."""
+        previous = self._as_messages(chat_history)
+        audio_output, history = self._handle_chat(audio, text_input, list(previous), use_text)
+        messages = self._as_messages(history)
+        # The service returns the complete session on success and only an error
+        # row on failure. Keep earlier visible turns when displaying that row.
+        session_messages = self._as_messages(
+            self.chat_service.get_conversation_history(self.current_session_id)
+        )
+        if messages != session_messages and messages[:len(previous)] != previous:
+            messages = previous + messages
+        if (
+            isinstance(audio_output, tuple)
+            and len(audio_output) == 2
+            and len(audio_output[1]) == 0
+        ):
+            audio_output = None
+        return audio_output, messages
 
     def _clear_context(self) -> Tuple[str, List]:
         """Clear conversation context."""
@@ -600,8 +640,10 @@ class ChatTab:
                 return chat_history, gr.update(), gr.update(), gr.update()
             
             # 获取完整的对话历史
-            full_history = self.chat_service.get_conversation_history(self.current_session_id)
-            
+            full_history = self._as_messages(
+                self.chat_service.get_conversation_history(self.current_session_id)
+            )
+
             if not full_history:
                 return [], gr.update(), gr.update(), gr.update()
             
@@ -628,16 +670,8 @@ class ChatTab:
             # 获取当前页的消息
             page_messages = full_history[start_idx:end_idx]
             
-            # 格式化为Gradio聊天格式
-            formatted_history = []
-            for msg in page_messages:
-                if msg["role"] == "user":
-                    formatted_history.append([msg["content"], None])
-                elif msg["role"] == "assistant":
-                    if formatted_history and formatted_history[-1][1] is None:
-                        formatted_history[-1][1] = msg["content"]
-                    else:
-                        formatted_history.append([None, msg["content"]])
+            # The interface uses Gradio's messages format.
+            formatted_history = page_messages
             
             # 更新页面信息
             page_text = f"**第 {current_page} 页，共 {total_pages} 页** (显示 {len(page_messages)} 条消息)"
@@ -677,8 +711,10 @@ class ChatTab:
                 return "**历史记录:** 无活动会话"
             
             # 获取完整历史记录数量
-            full_history = self.chat_service.get_conversation_history(self.current_session_id)
-            total_count = len(full_history) if full_history else 0
+            full_history = self._as_messages(
+                self.chat_service.get_conversation_history(self.current_session_id)
+            )
+            total_count = len(full_history)
             
             # 当前显示的消息数量
             current_count = len(chat_history) if chat_history else 0

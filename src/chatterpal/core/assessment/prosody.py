@@ -16,6 +16,11 @@ try:
 except ImportError:
     mysp = None
 
+try:
+    import parselmouth
+except ImportError:
+    parselmouth = None
+
 from .base import AssessmentBase, AssessmentError, ProsodyFeatures
 
 logger = logging.getLogger(__name__)
@@ -67,14 +72,7 @@ class ProsodyAnalyzer(AssessmentBase):
             temp_wav_path = self._prepare_audio_file(audio_data)
 
             try:
-                # 分析韵律特征
-                prosody_features = self._analyze_prosody_features(temp_wav_path)
-
-                return {
-                    "prosody_features": prosody_features,
-                    "analysis_success": True,
-                    "error": None,
-                }
+                return self._analyze_prosody_features(temp_wav_path)
 
             finally:
                 # 只清理当前调用创建的文件，路径输入由调用方拥有
@@ -139,131 +137,130 @@ class ProsodyAnalyzer(AssessmentBase):
             self._cleanup_temp_file(temp_wav_path)
             raise
 
-    def _analyze_prosody_features(self, wav_file_path: str) -> ProsodyFeatures:
-        """
-        分析音频的韵律特征
+    def _analyze_prosody_features(self, wav_file_path: str) -> Dict[str, Any]:
+        """Keep measured features separate from legacy, uncalibrated estimates."""
+        if not os.path.isfile(wav_file_path):
+            raise AssessmentError(f"音频文件不存在: {wav_file_path}")
 
-        Args:
-            wav_file_path: WAV文件路径
+        features = ProsodyFeatures()
+        sources = dict.fromkeys(vars(features), "unavailable_legacy_default")
+        errors = {}
+        provider_features = {}
+        audio_dir = os.path.dirname(wav_file_path)
+        audio_name = os.path.splitext(os.path.basename(wav_file_path))[0]
+        provider_calls = {
+            "syllable_count": ("myspsyl", 1),
+            "pause_count": ("mysppaus", 0),
+            "speaking_rate": ("myspsr", 120.0),
+            "articulation_rate": ("myspatc", 150.0),
+        }
 
-        Returns:
-            韵律特征对象
-        """
-        try:
-            if mysp is None:
-                self.logger.warning("myprosody库未安装，使用默认特征")
-                return ProsodyFeatures()
+        if mysp is None:
+            errors["myprosody"] = "myprosody unavailable; provider features unmeasured"
+        else:
+            for name, (function_name, fallback) in provider_calls.items():
+                try:
+                    value = getattr(mysp, function_name)(audio_name, audio_dir)
+                    if (
+                        isinstance(value, (bool, np.bool_))
+                        or not isinstance(value, (int, float, np.integer, np.floating))
+                        or not np.isfinite(value)
+                        or value < 0
+                        or (name != "pause_count" and value == 0)
+                        or (name.endswith("count") and value != int(value))
+                    ):
+                        raise ValueError(f"unusable {function_name} result: {value!r}")
+                    provider_features[name] = (
+                        int(value) if name.endswith("count") else float(value)
+                    )
+                    sources[name] = "myprosody"
+                except Exception as error:
+                    errors[name] = str(error)
+                    setattr(features, name, fallback)
+                    self.logger.warning(f"{function_name}分析失败: {error}")
 
-            # 使用myprosody分析音频特征
-            audio_dir = os.path.dirname(wav_file_path)
-            audio_filename = os.path.basename(wav_file_path)
+            if not provider_features:
+                raise AssessmentError(f"myprosody未返回可用特征: {errors}")
 
-            # 重要：文件名不包含扩展名，myprosody会自动添加.wav
-            audio_name_without_ext = os.path.splitext(audio_filename)[0]
+        for name, value in provider_features.items():
+            setattr(features, name, value)
 
-            self.logger.info(
-                f"分析音频文件: {audio_name_without_ext} 在目录: {audio_dir}"
+        # These formulas are retained for numeric compatibility, not validation
+        # of vowel accuracy, intonation, fluency, or words per minute.
+        if "speaking_rate" in provider_features:
+            features.words_per_minute = features.speaking_rate
+            sources["words_per_minute"] = "legacy_rate_alias_uncalibrated"
+            features.intonation_index = min(
+                1.0, max(0.3, features.speaking_rate / 150)
             )
-
-            # 检查音频文件是否存在
-            if not os.path.exists(wav_file_path):
-                self.logger.error(f"音频文件不存在: {wav_file_path}")
-                return ProsodyFeatures()
-
-            # 尝试使用myprosody的各个函数
-            features = {}
-
-            # 获取音节数
-            try:
-                syllable_count = mysp.myspsyl(audio_name_without_ext, audio_dir)
-                features["syllable_count"] = (
-                    syllable_count
-                    if isinstance(syllable_count, (int, float)) and syllable_count > 0
-                    else 1
-                )
-                self.logger.info(f"音节数: {features['syllable_count']}")
-            except Exception as e:
-                self.logger.warning(f"获取音节数失败: {e}")
-                features["syllable_count"] = 1
-
-            # 获取停顿数
-            try:
-                pause_count = mysp.mysppaus(audio_name_without_ext, audio_dir)
-                features["pause_count"] = (
-                    pause_count
-                    if isinstance(pause_count, (int, float)) and pause_count >= 0
-                    else 0
-                )
-                self.logger.info(f"停顿数: {features['pause_count']}")
-            except Exception as e:
-                self.logger.warning(f"获取停顿数失败: {e}")
-                features["pause_count"] = 0
-
-            # 获取语速
-            try:
-                speaking_rate = mysp.myspsr(audio_name_without_ext, audio_dir)
-                features["speaking_rate"] = (
-                    speaking_rate
-                    if isinstance(speaking_rate, (int, float)) and speaking_rate > 0
-                    else 120
-                )
-                self.logger.info(f"语速: {features['speaking_rate']}")
-            except Exception as e:
-                self.logger.warning(f"获取语速失败: {e}")
-                features["speaking_rate"] = 120
-
-            # 获取发音率
-            try:
-                articulation_rate = mysp.myspatc(audio_name_without_ext, audio_dir)
-                features["articulation_rate"] = (
-                    articulation_rate
-                    if isinstance(articulation_rate, (int, float))
-                    and articulation_rate > 0
-                    else 150
-                )
-                self.logger.info(f"发音率: {features['articulation_rate']}")
-            except Exception as e:
-                self.logger.warning(f"获取发音率失败: {e}")
-                features["articulation_rate"] = 150
-
-            # 计算基于实际特征的其他指标
-            duration_estimate = (
-                features["syllable_count"] / (features["speaking_rate"] / 60)
-                if features["speaking_rate"] > 0
-                else 1
+            sources["intonation_index"] = "legacy_heuristic_uncalibrated"
+        if "articulation_rate" in provider_features:
+            features.vowel_accuracy = min(
+                0.9, max(0.5, features.articulation_rate / 200)
             )
-
-            return ProsodyFeatures(
-                speaking_rate=features["speaking_rate"],
-                articulation_rate=features["articulation_rate"],
-                f0_mean=150.0,  # 基于典型值
-                f0_std=25.0,  # 基于典型值
-                f0_max=200.0,
-                f0_min=100.0,
-                pause_duration=features["pause_count"] * 0.5,  # 估算停顿时长
-                words_per_minute=features["speaking_rate"],
-                vowel_accuracy=min(
-                    0.9, max(0.5, features["articulation_rate"] / 200)
-                ),  # 基于发音率估算
-                formant_ratio=0.8,
-                intonation_index=min(
-                    1.0, max(0.3, features["speaking_rate"] / 150)
-                ),  # 基于语速估算
-                fluency_score=min(
-                    1.0,
-                    max(
-                        0.3,
-                        (features["speaking_rate"] / 150)
-                        * (1 - features["pause_count"] / 10),
-                    ),
+            sources["vowel_accuracy"] = "legacy_heuristic_uncalibrated"
+        if "pause_count" in provider_features:
+            features.pause_duration = features.pause_count * 0.5
+            sources["pause_duration"] = "legacy_heuristic_uncalibrated"
+        if {"speaking_rate", "pause_count"} <= provider_features.keys():
+            features.fluency_score = min(
+                1.0,
+                max(
+                    0.3,
+                    (features.speaking_rate / 150) * (1 - features.pause_count / 10),
                 ),
-                syllable_count=features["syllable_count"],
-                pause_count=features["pause_count"],
             )
+            sources["fluency_score"] = "legacy_heuristic_uncalibrated"
 
-        except Exception as e:
-            self.logger.error(f"韵律特征分析失败: {e}")
-            return ProsodyFeatures()
+        acoustic_measurements = {}
+        try:
+            acoustic_measurements = self._measure_pitch(wav_file_path)
+        except Exception as error:
+            errors["acoustics"] = str(error)
+        duration = acoustic_measurements.pop("duration", None)
+        for name, value in acoustic_measurements.items():
+            setattr(features, name, value)
+            sources[name] = "parselmouth"
+        if not acoustic_measurements:
+            errors.setdefault("pitch", "No voiced frames; F0 is unmeasured")
+
+        if not provider_features and duration is None:
+            raise AssessmentError(f"没有可用的韵律分析后端: {errors}")
+
+        return {
+            "prosody_features": features,
+            "analysis_success": True,
+            "analysis_status": "partial" if errors else "measured",
+            "error": "; ".join(f"{name}: {error}" for name, error in errors.items())
+            or None,
+            "feature_errors": errors,
+            "feature_sources": sources,
+            "unavailable_features": [
+                name
+                for name, source in sources.items()
+                if source == "unavailable_legacy_default"
+            ],
+            "duration": duration,
+            "calibrated": False,
+        }
+
+    def _measure_pitch(self, wav_file_path: str) -> Dict[str, float]:
+        """Measure recording-level F0; unvoiced recordings have no F0 estimate."""
+        if parselmouth is None:
+            raise AssessmentError("Parselmouth unavailable; pitch is unmeasured")
+        sound = parselmouth.Sound(wav_file_path)
+        measurements = {"duration": float(sound.get_total_duration())}
+        pitch = sound.to_pitch(time_step=0.01, pitch_floor=75, pitch_ceiling=500)
+        values = pitch.selected_array["frequency"]
+        values = values[np.isfinite(values) & (values > 0)]
+        if values.size:
+            measurements.update(
+                f0_mean=float(np.mean(values)),
+                f0_std=float(np.std(values)),
+                f0_min=float(np.min(values)),
+                f0_max=float(np.max(values)),
+            )
+        return measurements
 
     def _cleanup_temp_file(self, file_path: str) -> None:
         """

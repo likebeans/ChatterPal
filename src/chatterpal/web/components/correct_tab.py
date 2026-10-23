@@ -19,28 +19,17 @@ class CorrectTab:
         with gr.Tab("Correct") as tab:
             gr.Markdown(
                 """
-                # 🎯 专业发音评估系统
-                
-                本系统采用先进的音频韵律特征分析技术，对您的发音进行全方位的专业评估。
-                
-                ## 🔬 技术特色：
-                - **音频信号分析**：直接分析音频波形，而非仅依赖文本识别
-                - **韵律特征提取**：分析语速、音调、停顿、语调等关键特征
-                - **多维度评估**：流畅度、发音准确性、韵律表现、内容准确性
-                - **专业评分**：基于语音学原理的客观评分系统
-                
-                ## 📊 评估维度：
-                - **流畅度**：语速控制、停顿合理性、语音连贯性
-                - **发音准确性**：元音发音、辅音清晰度、音素准确性
-                - **韵律表现**：音调变化、重音位置、语调自然度
-                - **内容准确性**：与目标文本的匹配程度
-                
-                ## 🚀 使用方法：
-                1. **输入目标文本**（可选）：想要练习的句子或段落
-                2. **录制发音**：清晰地朗读内容
-                3. **获取评估**：系统将提供详细的发音分析报告
-                
-                **注意**：本系统基于音频信号进行分析，能够检测真实的发音质量。
+                # 发音练习分析
+
+                结合语音识别与可用的声学分析，展示服务返回的反馈和练习建议。
+                **评分尚未校准，仅供练习参考，不代表专业发音测评。**
+                部分数值可能为后端估算或默认值；没有问题条目不代表没有发音问题。
+
+                1. 输入目标文本（可选）
+                2. 清晰地录制发音
+                3. 查看识别文本、参考报告及练习建议
+
+                单词或音素分析未提供时会明确标注，不会补造分析结果。
                 """
             )
 
@@ -54,12 +43,13 @@ class CorrectTab:
                         info="可选：输入标准文本进行对比分析",
                     )
 
-                    audio_input = gr.Microphone(
-                        label="🎤 录制您的发音", info="请清晰地朗读内容，确保音质清晰"
+                    audio_input = gr.Audio(
+                        sources=["microphone"], type="numpy",
+                        label="🎤 录制您的发音（请清晰地朗读内容）",
                     )
 
                     assess_btn = gr.Button(
-                        value="🔬 开始专业评估", variant="primary", size="lg"
+                        value="开始练习分析", variant="primary", size="lg"
                     )
 
             # Output section - Main results
@@ -72,7 +62,7 @@ class CorrectTab:
                     overall_feedback = gr.Textbox(
                         label="📋 综合评价与指导建议",
                         lines=8,
-                        info="基于专业语音学分析的综合评价",
+                        info="服务返回的未校准参考评分和反馈",
                     )
 
                 with gr.Column(scale=1):
@@ -94,31 +84,14 @@ class CorrectTab:
             with gr.Accordion("🔧 技术说明", open=False):
                 gr.Markdown(
                     """
-                    ### 分析技术详情
-                    
-                    **音频特征分析：**
-                    - 基频(F0)分析：检测音调变化和语调模式
-                    - 共振峰分析：识别元音发音准确性
-                    - 能量分析：评估语音清晰度和音量控制
-                    - 时长分析：检测语速和停顿模式
-                    
-                    **韵律特征提取：**
-                    - 语速变化检测
-                    - 重音位置识别
-                    - 语调曲线分析
-                    - 停顿模式评估
-                    
-                    **评估算法：**
-                    - 基于语音学原理的多维度评分
-                    - 机器学习辅助的模式识别
-                    - 统计学方法的置信度计算
-                    - 个性化的改进建议生成
-                    
-                    **适用场景：**
-                    - 英语发音练习和纠正
-                    - 语言学习者发音质量评估
-                    - 口语表达能力提升训练
-                    - 语音清晰度专业训练
+                    ### 报告说明
+
+                    报告展示纠错服务返回的识别文本、参考评分、问题条目和练习建议。
+                    当前评分尚未校准，部分数值可能来自后端估算或默认值。
+                    声学特征与发音错误之间的关联尚未验证，不能替代专业教师的判断。
+
+                    未提供问题条目时，只能说明本次报告没有返回相应结果；
+                    不能据此认定发音正确，也不会填入虚构的单词、音素或置信度。
                     """
                 )
 
@@ -148,13 +121,49 @@ class CorrectTab:
                 return error_msg, error_msg, "", "", ""
 
             # Process assessment
-            result = self.correction_service.assess_pronunciation(
-                audio_input=audio_input,
+            report = self.correction_service.comprehensive_correction(
+                audio_data=audio_input,
                 target_text=target_text.strip() if target_text else "",
+                analysis_level="expert",
             )
 
-            return result
+            feedback = [
+                "参考评分（未校准，仅供练习参考；可能包含后端估算或默认值）",
+                f"综合评分: {report.overall_score:.1f}/100",
+                report.detailed_feedback or "本次报告未提供详细评分和反馈。",
+            ]
+            if report.prosody_issues:
+                feedback.append("\n韵律问题:\n" + self._format_issues(report.prosody_issues))
+            else:
+                feedback.append("\n本次报告未提供韵律问题条目，不能据此判断韵律正常。")
+            practice = ["改进建议:"]
+            practice.extend(f"- {item}" for item in report.improvement_suggestions)
+            practice.append("\n练习建议:")
+            practice.extend(f"- {item}" for item in report.practice_recommendations)
+            if not report.improvement_suggestions and not report.practice_recommendations:
+                practice.append("本次报告未提供练习建议。")
+
+            return (
+                report.recognized_text or "语音识别结果不可用。",
+                "\n".join(feedback),
+                self._format_issues(report.pronunciation_errors)
+                or "单词分析不可用：本次报告未提供发音问题条目，不代表发音无误。",
+                self._format_issues(report.phoneme_problems)
+                or "音素分析不可用：本次报告未提供音素问题条目，不代表音素发音无误。",
+                "\n".join(practice),
+            )
 
         except Exception as e:
             error_msg = f"❌ 评估过程出错: {safe_str(e)}"
             return error_msg, error_msg, "", "", ""
+
+    @staticmethod
+    def _format_issues(issues) -> str:
+        """Render only descriptions and guidance supplied in the service report."""
+        lines = []
+        for issue in issues:
+            lines.append(f"- {issue['description']}")
+            if issue.get("suggestion"):
+                lines.append(f"  建议: {issue['suggestion']}")
+            lines.extend(f"  - {tip}" for tip in issue.get("correction_tips", []))
+        return "\n".join(lines)

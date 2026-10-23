@@ -116,8 +116,11 @@ class AlibabaTTS(TTSBase):
             # 调用阿里云 TTS API
             audio_data = synthesizer.call(text)
 
-            # 检查音频数据
+            # 检查音频数据；SDK 的可变缓冲区统一转换为 bytes。
             if audio_data:
+                if not isinstance(audio_data, (bytes, bytearray)):
+                    raise TTSError("合成失败，音频数据不是二进制数据")
+                audio_data = bytes(audio_data)
                 synthesis_time = time.time() - start_time
                 self.logger.info(f"语音合成完成，耗时: {synthesis_time:.2f}s，音频大小: {len(audio_data)} bytes")
                 return audio_data

@@ -105,7 +105,7 @@ class TestChatTab:
         blocks = build_interface(components.chat)
         assert any(isinstance(item, gr.Chatbot) for item in blocks.blocks.values())
         assert any(isinstance(item, gr.Textbox) and "文本输入" in item.label for item in blocks.blocks.values())
-        assert any(fn.fn == components.chat._handle_chat for fn in blocks.fns.values())
+        assert any(fn.fn == components.chat._handle_chat_messages for fn in blocks.fns.values())
 
     def test_process_text_message(self, components):
         audio, history = components.chat._handle_chat(None, "Hello, how are you", [], True)
@@ -145,7 +145,7 @@ class TestChatTab:
         assert "失败" not in topic
 
     def test_format_conversation_display(self, components):
-        _, history = components.chat._handle_chat(None, "Hello", [], True)
+        _, history = components.chat._handle_chat_messages(None, "Hello", [], True)
         # Verify against the actual messages-mode widget, so tuple/message
         # mismatches cannot pass just because the callback returns a list.
         # Match ChatTab.create_interface's declared format without coupling this

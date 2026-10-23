@@ -30,11 +30,14 @@ class ColoredFormatter(logging.Formatter):
     }
 
     def format(self, record):
-        # 添加颜色
-        if record.levelname in self.COLORS:
-            record.levelname = f"{self.COLORS[record.levelname]}{record.levelname}{self.COLORS['RESET']}"
-
-        return super().format(record)
+        # 格式化结束后恢复记录，避免颜色进入其他处理器的输出。
+        levelname = record.levelname
+        try:
+            if levelname in self.COLORS:
+                record.levelname = f"{self.COLORS[levelname]}{levelname}{self.COLORS['RESET']}"
+            return super().format(record)
+        finally:
+            record.levelname = levelname
 
 
 class JSONFormatter(logging.Formatter):
@@ -180,15 +183,8 @@ class ChatterPalLogger:
         exc_info: bool = False,
     ) -> None:
         """带额外字段的日志记录"""
-        if extra_fields:
-            # 创建LogRecord并添加额外字段
-            record = self.logger.makeRecord(
-                self.logger.name, level, "", 0, message, (), exc_info
-            )
-            record.extra_fields = extra_fields
-            self.logger.handle(record)
-        else:
-            self.logger.log(level, message, exc_info=exc_info)
+        extra = {"extra_fields": extra_fields} if extra_fields else None
+        self.logger.log(level, message, exc_info=exc_info, extra=extra)
 
 
 # 全局日志器实例

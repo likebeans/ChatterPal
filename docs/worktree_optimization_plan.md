@@ -1,6 +1,6 @@
 # ChatterPal 并行优化计划
 
-日期：2026-10-23。初始调查基于 `a90b85c`；聊天基线现已提交为 `2f4fc30`。第一轮 A–E 已按顺序进入独立集成分支 `integrate/optimization-round-1`，集成修复为 `575164f`。联合验收已执行完毕，但后端仍有 36 项失败、覆盖率 73.76% 未达 80%；先修复验收阻塞，再开始后续优化。本文保留原任务范围与分工，实际结果及失败清单见 [`integration_round_1.md`](integration_round_1.md)。
+日期：2026-10-23。初始调查基于 `a90b85c`；聊天基线现已提交为 `2f4fc30`。第一轮 A–E 已按顺序进入独立集成分支 `integrate/optimization-round-1`，集成修复为 `575164f`。首次验收的 36 项失败已全部修复，重新联合验收后端 1273 项通过、覆盖率 81.59%，前端、真实 API、Gradio 会话和新源码 ARM64 Docker 检查通过。本轮修复、回归测试与验收文档统一保存为后续优化基线；完整结果与边界见 [`integration_recovery.md`](integration_recovery.md)，首次失败清单保留在 [`integration_round_1.md`](integration_round_1.md)。本文保留原任务范围与分工，后续任务应从保存本轮修复后的基线开始。
 
 ## 推荐安排
 

@@ -13,10 +13,10 @@ from .base import (
     AssessmentBase,
     AssessmentError,
     AssessmentResult,
-    WordAnalysis,
     PhonemeAnalysis,
     ProsodyFeatures,
 )
+from .phoneme import PhonemeAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +157,12 @@ class PronunciationCorrector(AssessmentBase):
         self.logger.info("发音纠错器初始化完成")
 
     def assess(
-        self, audio_data: Union[bytes, str, Tuple], target_text: str = "", **kwargs
+        self,
+        audio_data: Union[bytes, str, Tuple],
+        target_text: str = "",
+        *,
+        phoneme_analysis: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> AssessmentResult:
         """
         综合发音评估和纠错
@@ -177,27 +182,39 @@ class PronunciationCorrector(AssessmentBase):
             if not self.validate_audio_data(audio_data):
                 raise AssessmentError("音频数据验证失败")
 
-            # 这里应该集成ASR、韵律分析和音素分析
-            # 为了演示，我们创建一个基本的评估结果
+            # A service can supply the analysis it already owns. Failed supplied
+            # analysis is also authoritative: do not retry an unavailable backend.
+            if phoneme_analysis is None:
+                phoneme_analysis = PhonemeAnalyzer(self.config).assess(
+                    audio_data, target_text
+                )
+            if not isinstance(phoneme_analysis, dict):
+                raise AssessmentError("音频分析结果格式错误")
 
-            # 估算音频时长
-            duration = self.estimate_audio_duration(audio_data)
+            measured = phoneme_analysis.get("analysis_success") is True
+            duration = (
+                float(phoneme_analysis["duration"])
+                if measured
+                else self.estimate_audio_duration(audio_data)
+            )
+            features = ProsodyFeatures()
+            summary = self._recording_summary(phoneme_analysis, features)
 
-            # 检测语言
-            language = self.detect_language(target_text)
-
-            # 创建基本的评估结果
+            # Retain the existing numeric contract until scores are calibrated.
             result = AssessmentResult(
                 overall_score=75.0,
                 fluency_score=80.0,
                 pronunciation_score=70.0,
                 prosody_score=75.0,
                 accuracy_score=80.0,
-                prosody_features=ProsodyFeatures(),
-                recognized_text="",  # 需要ASR结果
+                prosody_features=features,
+                phoneme_analysis=[summary],
+                recognized_text="",  # No ASR is performed by this assessor.
                 target_text=target_text,
                 audio_duration=duration,
-                quality_score=75.0,
+                quality_score=(
+                    float(phoneme_analysis["quality_score"]) if measured else 75.0
+                ),
             )
 
             # 生成反馈和建议
@@ -211,6 +228,74 @@ class PronunciationCorrector(AssessmentBase):
         except Exception as e:
             self.logger.error(f"发音评估失败: {e}")
             raise AssessmentError(f"发音评估失败: {e}")
+
+    def _recording_summary(
+        self, analysis: Dict[str, Any], features: ProsodyFeatures
+    ) -> PhonemeAnalysis:
+        """Store recording statistics in the legacy result without IPA mapping."""
+        scope = "整段录音声学摘要；未进行音素对齐，不能判断具体音素或单词的发音正确性。"
+        if analysis.get("analysis_success") is not True:
+            reason = analysis.get("error") or "Parselmouth不可用，未取得实测声学特征"
+            return PhonemeAnalysis(
+                phoneme="whole_recording",
+                error_type="analysis_unavailable",
+                description=f"{scope}声学分析不可用：{reason}。兼容数值为默认值，非实测。",
+                severity="low",
+            )
+
+        measurements = [
+            f"时长 {analysis['duration']:.2f} 秒",
+            f"采样率 {analysis['sample_rate']:.0f} Hz",
+        ]
+        pitch = analysis.get("pitch", {})
+        if pitch.get("available", True) and all(
+            np.isfinite(pitch.get(name, float("nan")))
+            for name in ("mean", "std", "min", "max")
+        ):
+            for name in ("mean", "std", "min", "max"):
+                setattr(features, f"f0_{name}", float(pitch[name]))
+            measurements.append(
+                f"基频均值 {features.f0_mean:.1f} Hz，"
+                f"范围 {features.f0_min:.1f}–{features.f0_max:.1f} Hz"
+            )
+        else:
+            measurements.append("基频不可用（无有效有声帧或提取失败），兼容默认值非实测")
+
+        formants = analysis.get("formants", {})
+        actual_formants = {
+            name: float(formants[name]["mean"])
+            for name in ("F1", "F2", "F3")
+            if formants.get("available", True)
+            and formants.get(name, {}).get("values")
+            and np.isfinite(formants[name].get("mean", float("nan")))
+        }
+        if actual_formants:
+            measurements.append(
+                "共振峰 "
+                + "，".join(
+                    f"{name} {value:.1f} Hz" for name, value in actual_formants.items()
+                )
+            )
+        else:
+            measurements.append("共振峰不可用，兼容默认值非实测")
+        intensity = analysis.get("intensity", {})
+        if intensity.get("available", True) and np.isfinite(
+            intensity.get("mean", float("nan"))
+        ):
+            measurements.append(f"平均强度 {intensity['mean']:.1f} dB")
+        spectral = analysis.get("spectral", {})
+        if spectral.get("available", True) and np.isfinite(
+            spectral.get("centroid", float("nan"))
+        ):
+            measurements.append(f"频谱重心 {spectral['centroid']:.1f} Hz")
+        measurements.append("语速、停顿及准确性数值保留兼容默认值，非实测；质量分为未校准启发式值")
+        return PhonemeAnalysis(
+            phoneme="whole_recording",
+            error_type="acoustic_summary",
+            description=scope + "；".join(measurements) + "。",
+            severity="low",
+            actual_formants=actual_formants,
+        )
 
     def detect_pronunciation_errors(
         self,
@@ -617,6 +702,10 @@ class PronunciationCorrector(AssessmentBase):
         """
         feedback = f"## 🎯 发音评估报告\n\n"
         feedback += f"### 📊 综合评分：{result.overall_score:.1f}/100\n\n"
+        feedback += "评分为兼容保留的演示值，尚未校准，不能作为发音准确性的测量。\n\n"
+        for summary in result.phoneme_analysis:
+            if summary.phoneme == "whole_recording":
+                feedback += f"{summary.description}\n\n"
 
         feedback += f"### 📈 详细评分：\n"
         feedback += f"- **流畅度**: {result.fluency_score:.1f}/100\n"
@@ -668,6 +757,12 @@ class PronunciationCorrector(AssessmentBase):
             建议列表
         """
         suggestions = []
+
+        speaking_rate = result.prosody_features.speaking_rate
+        if np.isfinite(speaking_rate) and 0 < speaking_rate < 100:
+            suggestions.append("适当加快语速，保持自然流畅的节奏")
+        elif np.isfinite(speaking_rate) and speaking_rate > 200:
+            suggestions.append("放慢语速，注意发音清晰度")
 
         if result.fluency_score < 70:
             suggestions.append("练习流畅的连续发音")

@@ -502,16 +502,18 @@ class ASRBase(ABC):
         except (ASRQualityError, ASRConfidenceError, ASRTimeoutError):
             raise
         except Exception as e:
+            from ..errors import error_handler
+
             processing_time = time.time() - start_time
             self.logger.error(f"增强识别过程中发生错误: {e}")
-            
+            error = error_handler.handle_asr_exception(e)
             return ASRResult(
                 text=None,
                 confidence=0.0,
                 confidence_level=ConfidenceLevel.VERY_LOW,
                 audio_quality_score=0.0,
                 processing_time=processing_time,
-                metadata={"error": safe_str(e)}
+                metadata={"error": safe_str(e), "error_code": error.error_info.code}
             )
 
     def _assess_audio_quality(self, audio_data: Union[bytes, str], metadata: Dict[str, Any]) -> float:

@@ -147,15 +147,31 @@ class PhonemeAnalyzer(AssessmentBase):
                     pitch_analysis, formant_analysis, intensity_analysis
                 )
 
-                return {
-                    "duration": duration,
-                    "sample_rate": sample_rate,
+                components = {
                     "pitch": pitch_analysis,
                     "formants": formant_analysis,
                     "intensity": intensity_analysis,
                     "spectral": spectral_analysis,
+                }
+                feature_errors = {
+                    name: component["error"]
+                    for name, component in components.items()
+                    if not component["available"]
+                }
+                return {
+                    "duration": duration,
+                    "sample_rate": sample_rate,
+                    **components,
                     "quality_score": quality_score,
+                    "quality_source": "legacy_heuristic_uncalibrated",
                     "analysis_success": True,
+                    "analysis_status": "partial" if feature_errors else "measured",
+                    "feature_errors": feature_errors,
+                    "feature_sources": {
+                        name: component["source"]
+                        for name, component in components.items()
+                    },
+                    "calibrated": False,
                 }
 
             finally:
@@ -221,10 +237,10 @@ class PhonemeAnalyzer(AssessmentBase):
 
             # 获取音调值
             pitch_values = pitch.selected_array["frequency"]
-            pitch_values = pitch_values[pitch_values != 0]  # 移除无声段
+            pitch_values = pitch_values[np.isfinite(pitch_values) & (pitch_values > 0)]
 
             if len(pitch_values) == 0:
-                return self._get_default_pitch()
+                return self._get_default_pitch("No voiced frames; F0 is unmeasured")
 
             return {
                 "mean": float(np.mean(pitch_values)),
@@ -237,11 +253,13 @@ class PhonemeAnalyzer(AssessmentBase):
                 "total_frames": len(pitch.selected_array["frequency"]),
                 "voicing_ratio": len(pitch_values)
                 / len(pitch.selected_array["frequency"]),
+                "source": "parselmouth",
+                "available": True,
             }
 
         except Exception as e:
             self.logger.warning(f"音调分析失败: {e}")
-            return self._get_default_pitch()
+            return self._get_default_pitch(str(e))
 
     def _analyze_formants(self, sound) -> Dict[str, Any]:
         """
@@ -274,13 +292,13 @@ class PhonemeAnalyzer(AssessmentBase):
                 f2 = formants.get_value_at_time(2, time)
                 f3 = formants.get_value_at_time(3, time)
 
-                if not (np.isnan(f1) or np.isnan(f2) or np.isnan(f3)):
+                if all(np.isfinite(value) and value > 0 for value in (f1, f2, f3)):
                     f1_values.append(f1)
                     f2_values.append(f2)
                     f3_values.append(f3)
 
             if not f1_values:
-                return self._get_default_formants()
+                return self._get_default_formants("No valid formant frames")
 
             return {
                 "F1": {
@@ -299,11 +317,13 @@ class PhonemeAnalyzer(AssessmentBase):
                     "values": f3_values[:50],
                 },
                 "valid_frames": len(f1_values),
+                "source": "parselmouth",
+                "available": True,
             }
 
         except Exception as e:
             self.logger.warning(f"共振峰分析失败: {e}")
-            return self._get_default_formants()
+            return self._get_default_formants(str(e))
 
     def _analyze_intensity(self, sound) -> Dict[str, Any]:
         """
@@ -319,10 +339,10 @@ class PhonemeAnalyzer(AssessmentBase):
             # 提取强度
             intensity = sound.to_intensity(time_step=0.01)
             intensity_values = intensity.values[0]
-            intensity_values = intensity_values[~np.isnan(intensity_values)]
+            intensity_values = intensity_values[np.isfinite(intensity_values)]
 
             if len(intensity_values) == 0:
-                return self._get_default_intensity()
+                return self._get_default_intensity("No finite intensity frames")
 
             return {
                 "mean": float(np.mean(intensity_values)),
@@ -330,11 +350,13 @@ class PhonemeAnalyzer(AssessmentBase):
                 "min": float(np.min(intensity_values)),
                 "max": float(np.max(intensity_values)),
                 "range": float(np.max(intensity_values) - np.min(intensity_values)),
+                "source": "parselmouth",
+                "available": True,
             }
 
         except Exception as e:
             self.logger.warning(f"强度分析失败: {e}")
-            return self._get_default_intensity()
+            return self._get_default_intensity(str(e))
 
     def _analyze_spectrum(self, sound) -> Dict[str, Any]:
         """
@@ -352,27 +374,42 @@ class PhonemeAnalyzer(AssessmentBase):
 
             # 计算频谱重心
             frequencies = spectrum.xs()
-            magnitudes = spectrum.values[0]
+            # Praat stores real and imaginary Fourier coefficients in rows.
+            # Both are signed; spectral moments need nonnegative magnitudes.
+            coefficients = np.asarray(spectrum.values)
+            magnitudes = (
+                np.hypot(coefficients[0], coefficients[1])
+                if len(coefficients) > 1
+                else np.abs(coefficients[0])
+            )
+            total_magnitude = float(np.sum(magnitudes))
+            if not np.isfinite(total_magnitude) or total_magnitude <= 0:
+                raise ValueError("No spectral energy; spectrum is unavailable")
 
             # 频谱重心 (Spectral Centroid)
-            spectral_centroid = np.sum(frequencies * magnitudes) / np.sum(magnitudes)
+            spectral_centroid = np.sum(frequencies * magnitudes) / total_magnitude
 
             # 频谱扩散 (Spectral Spread)
             spectral_spread = np.sqrt(
                 np.sum(((frequencies - spectral_centroid) ** 2) * magnitudes)
-                / np.sum(magnitudes)
+                / total_magnitude
             )
 
             # 频谱倾斜 (Spectral Skewness)
-            spectral_skewness = np.sum(
-                ((frequencies - spectral_centroid) ** 3) * magnitudes
-            ) / (np.sum(magnitudes) * (spectral_spread**3))
+            spectral_skewness = (
+                np.sum(((frequencies - spectral_centroid) ** 3) * magnitudes)
+                / (total_magnitude * spectral_spread**3)
+                if spectral_spread > 0
+                else 0.0
+            )
 
             return {
                 "centroid": float(spectral_centroid),
                 "spread": float(spectral_spread),
                 "skewness": float(spectral_skewness),
                 "bandwidth": float(np.max(frequencies) - np.min(frequencies)),
+                "source": "parselmouth",
+                "available": True,
             }
 
         except Exception as e:
@@ -382,6 +419,9 @@ class PhonemeAnalyzer(AssessmentBase):
                 "spread": 500.0,
                 "skewness": 0.0,
                 "bandwidth": 4000.0,
+                "available": False,
+                "source": "unavailable_legacy_default",
+                "error": str(e),
             }
 
     def _calculate_quality_score(
@@ -612,12 +652,23 @@ class PhonemeAnalyzer(AssessmentBase):
                 "spread": 500.0,
                 "skewness": 0.0,
                 "bandwidth": 4000.0,
+                "available": False,
+                "source": "unavailable_legacy_default",
+                "error": "Parselmouth unavailable",
             },
             "quality_score": 70.0,
+            "quality_source": "unavailable_legacy_default",
             "analysis_success": False,
+            "analysis_status": "unavailable",
+            "error": "Parselmouth unavailable; no acoustic features measured",
+            "feature_sources": dict.fromkeys(
+                ("duration", "sample_rate", "pitch", "formants", "intensity", "spectral"),
+                "unavailable_legacy_default",
+            ),
+            "calibrated": False,
         }
 
-    def _get_default_pitch(self) -> Dict[str, Any]:
+    def _get_default_pitch(self, reason: str = "Pitch unavailable") -> Dict[str, Any]:
         """获取默认音调数据"""
         return {
             "mean": 150.0,
@@ -629,20 +680,39 @@ class PhonemeAnalyzer(AssessmentBase):
             "voiced_frames": 100,
             "total_frames": 120,
             "voicing_ratio": 0.83,
+            "available": False,
+            "source": "unavailable_legacy_default",
+            "error": reason,
         }
 
-    def _get_default_formants(self) -> Dict[str, Any]:
+    def _get_default_formants(
+        self, reason: str = "Formants unavailable"
+    ) -> Dict[str, Any]:
         """获取默认共振峰数据"""
         return {
             "F1": {"mean": 500.0, "std": 50.0, "values": []},
             "F2": {"mean": 1500.0, "std": 100.0, "values": []},
             "F3": {"mean": 2500.0, "std": 150.0, "values": []},
             "valid_frames": 100,
+            "available": False,
+            "source": "unavailable_legacy_default",
+            "error": reason,
         }
 
-    def _get_default_intensity(self) -> Dict[str, Any]:
+    def _get_default_intensity(
+        self, reason: str = "Intensity unavailable"
+    ) -> Dict[str, Any]:
         """获取默认强度数据"""
-        return {"mean": 60.0, "std": 5.0, "min": 50.0, "max": 70.0, "range": 20.0}
+        return {
+            "mean": 60.0,
+            "std": 5.0,
+            "min": 50.0,
+            "max": 70.0,
+            "range": 20.0,
+            "available": False,
+            "source": "unavailable_legacy_default",
+            "error": reason,
+        }
 
 
 # 便捷函数

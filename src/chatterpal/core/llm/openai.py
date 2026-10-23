@@ -222,6 +222,20 @@ class OpenAILLM(LLMBase):
 
                         try:
                             data = json.loads(data_str)
+                            if "error" in data:
+                                error = data["error"]
+                                if isinstance(error, dict):
+                                    error_msg = error.get("message") or "未知错误"
+                                    error_type = error.get("type") or "UNKNOWN"
+                                else:
+                                    error_msg = (
+                                        error if isinstance(error, str) and error
+                                        else "未知错误"
+                                    )
+                                    error_type = "UNKNOWN"
+                                raise LLMError(
+                                    f"API调用失败 [{error_type}]: {error_msg}"
+                                )
                             if "choices" in data and len(data["choices"]) > 0:
                                 delta = data["choices"][0].get("delta", {})
                                 content = delta.get("content", "")

@@ -14,7 +14,8 @@
 - [`development.md`](development.md) - 开发环境搭建和贡献指南
 - [`optimization_plan.md`](optimization_plan.md) - 基于实际代码的现状梳理、性能基线和分批优化计划
 - [`worktree_optimization_plan.md`](worktree_optimization_plan.md) - 多 worktree 任务分工、文件归属、验收标准与集成顺序
-- [`integration_round_1.md`](integration_round_1.md) - 聊天基线与 A–E 的集成提交、联合验收结果和验证边界
+- [`integration_round_1.md`](integration_round_1.md) - 聊天基线与 A–E 首次集成验收的历史结果和失败清单
+- [`integration_recovery.md`](integration_recovery.md) - 36 项失败修复、覆盖率恢复与重新联合验收
 - [`technical_implementation_summary.md`](technical_implementation_summary.md) - 技术实现总结
 
 ### 🔬 技术文档

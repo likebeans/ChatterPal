@@ -282,7 +282,7 @@ class TestWebComponentsBasic:
         with gr.Blocks(analytics_enabled=False) as interface:
             tab = chat_tab.create_interface()
         assert isinstance(tab, gr.Tab)
-        assert any(event.fn == chat_tab._handle_chat for event in interface.fns.values())
+        assert any(event.fn == chat_tab._handle_chat_messages for event in interface.fns.values())
 
     def test_score_tab_creation(self, offline_runtime):
         import gradio as gr

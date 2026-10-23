@@ -7,6 +7,7 @@
 from typing import Dict, Any, Optional, List
 from enum import Enum
 from dataclasses import dataclass
+from copy import deepcopy
 import logging
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class ErrorSeverity(Enum):
 class ErrorCategory(Enum):
     """错误分类"""
     AUDIO_INPUT = "audio_input"
+    TEXT_INPUT = "text_input"
     AUDIO_OUTPUT = "audio_output"
     SPEECH_RECOGNITION = "speech_recognition"
     SPEECH_SYNTHESIS = "speech_synthesis"
@@ -86,6 +88,28 @@ class ErrorHandler:
     def _init_error_definitions(self):
         """初始化错误定义"""
         self.error_definitions = {
+            "TEXT_INPUT_EMPTY": ErrorInfo(
+                code="TEXT_INPUT_EMPTY",
+                message="文本输入为空",
+                category=ErrorCategory.TEXT_INPUT,
+                severity=ErrorSeverity.LOW,
+                user_message="文本输入不能为空，请输入内容后重试。",
+                suggestions=["请重新输入想要练习的文本", "也可以切换为语音输入"],
+                metadata={}
+            ),
+            "AUDIO_PERMISSION_DENIED": ErrorInfo(
+                code="AUDIO_PERMISSION_DENIED",
+                message="音频访问权限被拒绝",
+                category=ErrorCategory.AUDIO_INPUT,
+                severity=ErrorSeverity.HIGH,
+                user_message="无法访问音频，请检查麦克风或音频文件的访问权限。",
+                suggestions=[
+                    "在浏览器或系统设置中允许麦克风访问",
+                    "检查上传文件的读取权限",
+                    "也可以切换为文本输入"
+                ],
+                metadata={}
+            ),
             # 音频输入错误
             "AUDIO_TOO_SHORT": ErrorInfo(
                 code="AUDIO_TOO_SHORT",
@@ -316,7 +340,7 @@ class ErrorHandler:
     
     def create_error(self, error_code: str, **kwargs) -> ChatModuleError:
         """创建错误对象"""
-        error_info = self.get_error_info(error_code)
+        error_info = deepcopy(self.get_error_info(error_code))
         if not error_info:
             # 创建通用错误
             error_info = ErrorInfo(
@@ -397,6 +421,20 @@ class ErrorHandler:
         
         return None
     
+    def handle_asr_exception(self, error: Exception) -> ChatModuleError:
+        """保留已分类错误，并将 ASR 边界的原始异常映射为用户提示。"""
+        if isinstance(error, ChatModuleError):
+            return error
+        if isinstance(error, PermissionError):
+            code = "AUDIO_PERMISSION_DENIED"
+        elif isinstance(error, ValueError):
+            code = "AUDIO_FORMAT_ERROR"
+        elif isinstance(error, TimeoutError):
+            code = "ASR_TIMEOUT"
+        else:
+            code = "ASR_SERVICE_ERROR"
+        return self.create_error(code, error_message=str(error))
+
     def handle_asr_error(self, asr_result) -> Optional[ChatModuleError]:
         """
         处理ASR错误
@@ -407,6 +445,12 @@ class ErrorHandler:
         Returns:
             错误对象，如果没有错误则返回None
         """
+        metadata = asr_result.metadata or {}
+        if "error" in metadata:
+            code = metadata.get("error_code", "ASR_SERVICE_ERROR")
+            if code not in self.error_definitions:
+                code = "ASR_SERVICE_ERROR"
+            return self.create_error(code, error_message=metadata["error"])
         if not asr_result.text:
             return self.create_error("ASR_NO_SPEECH")
         

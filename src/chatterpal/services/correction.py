@@ -142,24 +142,26 @@ class CorrectionService:
                 if not isinstance(recognized_text, str) or not recognized_text.strip():
                     raise AssessmentError("语音识别未返回有效文本")
 
-            # 2. 基础发音评估
-            base_assessment = self.corrector.assess(audio_data, target_text)
-            self.logger.info(f"基础评估完成，总分: {base_assessment.overall_score:.1f}")
-
-            # 3. 详细分析（根据级别）
+            # 2. 详细分析与基础评估复用同一次整段声学测量。
             phoneme_analysis = None
             prosody_analysis = None
-
             if analysis_level in ["detailed", "expert"]:
-                # 音素分析
                 try:
                     phoneme_analysis = self.phoneme_analyzer.assess(
                         audio_data, target_text
                     )
-                    self.logger.info("音素分析完成")
+                    self.logger.info("整段声学分析完成")
                 except Exception as e:
-                    self.logger.warning(f"音素分析失败: {e}")
+                    self.logger.warning(f"整段声学分析失败: {e}")
+                    phoneme_analysis = {"analysis_success": False, "error": str(e)}
 
+            base_assessment = self.corrector.assess(
+                audio_data, target_text, phoneme_analysis=phoneme_analysis
+            )
+            self.logger.info(f"基础评估完成，总分: {base_assessment.overall_score:.1f}")
+
+            # 3. 韵律分析（根据级别）
+            if analysis_level in ["detailed", "expert"]:
                 # 韵律分析
                 try:
                     prosody_analysis = self.prosody_analyzer.assess(
@@ -491,7 +493,10 @@ class CorrectionService:
     ) -> str:
         """生成详细反馈"""
 
-        feedback = f"# 🎯 专业发音纠错报告\n\n"
+        feedback = "# 🎯 发音练习分析报告\n\n"
+        feedback += "评分为兼容保留的演示值，尚未校准，不能作为发音准确性的测量。\n\n"
+        for analysis in assessment.phoneme_analysis:
+            feedback += analysis.description + "\n\n"
 
         # 总体评分
         feedback += f"## 📊 综合评分: {report.overall_score:.1f}/100\n\n"

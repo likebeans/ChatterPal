@@ -289,10 +289,17 @@ def test_short_wav_validation_ignores_container_header_size():
 
 
 @pytest.mark.parametrize(
-    "outcome", [None, ASRError("provider failed"), ValueError("provider failed")]
+    "outcome,error_type,error_code",
+    [
+        (None, SpeechRecognitionError, "ASR_NO_SPEECH"),
+        (ASRError("provider failed"), SpeechRecognitionError, "ASR_SERVICE_ERROR"),
+        (ValueError("provider failed"), AudioInputError, "AUDIO_FORMAT_ERROR"),
+    ],
 )
 @pytest.mark.parametrize("silent", [False, True])
-def test_caller_file_survives_retry_failure(tmp_path, outcome, silent):
+def test_caller_file_survives_retry_failure(
+    tmp_path, outcome, error_type, error_code, silent
+):
     samples = np.zeros(20000, dtype=np.int16) if silent else speech_samples()
     data = wav_bytes(samples, 16000)
     path = tmp_path / "caller.wav"
@@ -300,9 +307,9 @@ def test_caller_file_survives_retry_failure(tmp_path, outcome, silent):
     asr = RecordingASR(
         [outcome], config={"min_audio_quality": 0.0, "enable_confidence_check": False}
     )
-    with pytest.raises(SpeechRecognitionError) as error:
+    with pytest.raises(error_type) as error:
         asr.recognize_with_error_handling(str(path), max_retries=1)
-    assert error.value.error_info.code == "ASR_NO_SPEECH"
+    assert error.value.error_info.code == error_code
     assert len(asr.calls) == 1
     assert path.read_bytes() == data
 

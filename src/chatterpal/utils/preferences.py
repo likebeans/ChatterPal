@@ -6,6 +6,7 @@
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 import logging
@@ -90,11 +91,11 @@ class UserPreferences:
                 return preferences
             else:
                 self.logger.info("偏好设置文件不存在，使用默认设置")
-                return self.default_preferences.copy()
+                return deepcopy(self.default_preferences)
                 
         except Exception as e:
             self.logger.error(f"加载偏好设置失败: {e}")
-            return self.default_preferences.copy()
+            return deepcopy(self.default_preferences)
     
     def _merge_preferences(self, default: Dict[str, Any], loaded: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -107,16 +108,16 @@ class UserPreferences:
         Returns:
             合并后的设置
         """
-        result = default.copy()
+        result = deepcopy(default)
         
         for key, value in loaded.items():
             if key in result:
                 if isinstance(value, dict) and isinstance(result[key], dict):
                     result[key] = self._merge_preferences(result[key], value)
                 else:
-                    result[key] = value
+                    result[key] = deepcopy(value)
             else:
-                result[key] = value
+                result[key] = deepcopy(value)
         
         return result
     
@@ -307,8 +308,7 @@ class UserPreferences:
         """
         try:
             # 深拷贝默认设置以避免引用问题
-            import copy
-            self._preferences = copy.deepcopy(self.default_preferences)
+            self._preferences = deepcopy(self.default_preferences)
             return self._save_preferences()
         except Exception as e:
             self.logger.error(f"重置偏好设置失败: {e}")
@@ -371,7 +371,7 @@ class UserPreferences:
         Returns:
             所有偏好设置的副本
         """
-        return self._preferences.copy()
+        return deepcopy(self._preferences)
     
     def update_preferences(self, updates: Dict[str, Any]) -> bool:
         """
