@@ -28,6 +28,9 @@ ENV PATH="/opt/venv/bin:$PATH" \
     MODEL_CACHE_DIR=/app/data/models \
     AUDIO_TEMP_DIR=/app/temp_audio \
     TMPDIR=/app/temp_audio \
+    API_HOST=0.0.0.0 \
+    API_PORT=8010 \
+    LEARNING_DB_PATH=/app/data/learning/learning.sqlite3 \
     GRADIO_ANALYTICS_ENABLED=False
 
 # ffmpeg/flac decode audio; PortAudio and libsndfile support the Python bindings.

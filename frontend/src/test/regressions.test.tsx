@@ -116,7 +116,7 @@ describe('chat boundary regressions', () => {
 
   it('keeps completed conversation and its session when switching tabs', async () => {
     const post = vi.spyOn(axios, 'post').mockResolvedValue({ data: { response: 'saved reply', session_id: 'saved-session' } })
-    render(<App />)
+    render(<App initialTab="chat" />)
     fireEvent.change(screen.getByPlaceholderText('输入您想要练习的对话内容...'), { target: { value: 'Hello' } })
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
     await screen.findByText('saved reply')

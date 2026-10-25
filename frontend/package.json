@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "node browser-tests/verify.cjs",
+    "test:learning:browser": "node browser-tests/verify-learning.cjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -88,6 +88,14 @@ body {
   max-width: 900px;
 }
 
+#learning-panel {
+  max-width: 1060px;
+}
+
+.tab-nav {
+  flex-wrap: wrap;
+}
+
 .tab-panel[hidden] {
   display: none;
 }

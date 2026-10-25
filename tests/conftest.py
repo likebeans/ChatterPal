@@ -15,6 +15,7 @@ import pytest
 
 # Gradio otherwise starts an analytics thread while test modules are imported.
 os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
 
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root / "src"))
@@ -254,6 +255,7 @@ def setup_test_environment(monkeypatch, tmp_path, request):
         "AUDIO_TEMP_DIR": str(tmp_path / "audio"),
         "CACHE_DIR": str(tmp_path / "cache"),
         "MODEL_CACHE_DIR": str(tmp_path / "models"),
+        "LEARNING_DB_PATH": str(tmp_path / "learning.sqlite3"),
         "GRADIO_ANALYTICS_ENABLED": "False",
     }.items():
         if key in preserved_fields and any(name.upper() == key for name in os.environ):

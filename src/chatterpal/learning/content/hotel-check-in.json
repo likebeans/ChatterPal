@@ -1,0 +1,40 @@
+{
+  "task_id": "hotel-check-in",
+  "content_version": "1",
+  "title": "办理酒店入住",
+  "description": "你到达酒店前台。使用虚构预订卡：Alex Morgan，住两晚，已预订房间。告诉前台你来办理入住、说明预订姓名和晚数，并询问早餐、Wi-Fi 或退房时间中的一项。不要填写真实证件号、银行卡或其他敏感资料。",
+  "estimated_minutes": 8,
+  "learner_role": "使用 Alex Morgan 这张虚构预订卡入住的旅客",
+  "coach_role": "核对练习预订卡的前台；虚构练习设定：早餐 7–10 点、退房上午 11 点；Wi-Fi 是免费的，网络名 PracticeGuest，无密码，通过欢迎页连接。不需要访问实际网络。其他未给出的酒店信息说明需要向同事核实，不自行编造。",
+  "objectives": ["说明来办理入住并已有预订", "说清虚构预订姓名与两晚的入住时长", "询问一项住宿信息"],
+  "required_information": ["办理入住的意图", "预订卡姓名 Alex Morgan 和两晚", "一项住宿问题"],
+  "examples": [
+    "Hello, I'd like to check in. I have a reservation under Alex Morgan for two nights. What time is breakfast?",
+    "Hi, I have a booking for two nights under the name Alex Morgan. I'd like to check in, please. Could you tell me the check-out time?"
+  ],
+  "target_expressions": ["I'd like to check in, please.", "I have a reservation under ...", "The booking is for two nights.", "What time is breakfast?", "Could you tell me the check-out time?"],
+  "criteria": [
+    {"criterion_id": "check-in", "description": "说明自己要办理入住，并表达已有预订。"},
+    {"criterion_id": "reservation", "description": "根据虚构预订卡说明 Alex Morgan 和两晚；允许等价的姓名与数字表达。"},
+    {"criterion_id": "question", "description": "询问早餐、Wi-Fi 或退房时间中的一项，或提出另一项相关住宿问题。"}
+  ],
+  "opening": "Welcome to the hotel! How can I help you today?",
+  "steps": [
+    {"criterion_id": "check-in", "question": "Are you here to check in, and do you have a reservation?", "simpler_question": "Would you like to check in? Do you have a booking?", "sentence_starter": "I'd like to check in. I have a reservation."},
+    {"criterion_id": "reservation", "question": "What name is the reservation under, and how many nights are you staying?", "simpler_question": "Please tell me the name and number of nights on your practice booking card.", "sentence_starter": "The reservation is under ... for ... nights."},
+    {"criterion_id": "question", "question": "Is there anything you would like to ask about your stay?", "simpler_question": "Would you like to ask about breakfast, Wi-Fi, or check-out?", "sentence_starter": "What time is ...? / Could you tell me about ...?"}
+  ],
+  "read_aloud": {
+    "instruction": "跟读虚构预订示范。这里只练习表达，不办理真实入住。",
+    "target_text": "I have a reservation under Alex Morgan for two nights."
+  },
+  "free_response": {
+    "prompt": "使用虚构预订卡 Alex Morgan、两晚，向前台说明来办理入住并已有预订，再询问一项住宿信息。使用自己的表达，不需要填写标准答案。",
+    "required_information": ["入住意图与已有预订", "Alex Morgan、两晚", "一项住宿问题"]
+  },
+  "transfer_questions": [
+    {"question_id": "breakfast-question", "prompt": "At the front desk, check in using the practice booking Alex Morgan for two nights, then ask when breakfast is served.", "criterion_ids": ["check-in", "reservation", "question"]},
+    {"question_id": "checkout-question", "prompt": "Use the practice booking Alex Morgan for two nights to check in at another hotel, then ask what time you need to check out.", "criterion_ids": ["check-in", "reservation", "question"]}
+  ],
+  "source_reference": "B2 authored content; task-coaching content version 1"
+}

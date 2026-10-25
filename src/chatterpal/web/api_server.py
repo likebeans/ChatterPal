@@ -128,6 +128,24 @@ class APIServer:
         self.temp_dir = Path(tempfile.gettempdir()) / "chatterpal"
         self.temp_dir.mkdir(exist_ok=True)
         self._analysis_tasks = set()
+        if getattr(self.settings, 'learning_enabled', False):
+            self._register_learning()
+
+    def _register_learning(self):
+        from ..learning.adapters import ExistingProviders
+        from .routes.learning_records import mount_learning_api
+        from .routes.learning_tasks import mount_learning_tasks
+
+        origins = {
+            origin.strip() for origin in self.settings.learning_allowed_origins.split(',')
+            if origin.strip()
+        }
+        mount_learning_api(
+            self.app, self.settings, allowed_origins=origins, allow_record_writes=False
+        )
+        mount_learning_tasks(
+            self.app, self.settings, ExistingProviders(self.asr, self.llm, self.tts)
+        )
 
     def _cleanup_analysis_upload(self, audio_path: Path) -> None:
         try:

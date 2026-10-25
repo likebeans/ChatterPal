@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 from typing import Optional, Union
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -139,6 +139,24 @@ class Settings(BaseSettings):
         default="127.0.0.1", description="Gradio server host"
     )
 
+    # Learning API and its single-instance SQLite runtime.
+    api_host: str = Field(default="127.0.0.1", min_length=1)
+    api_port: int = Field(default=8010, ge=1024, le=65535)
+    learning_enabled: bool = Field(default=True)
+    learning_db_path: str = Field(default="data/learning/learning.sqlite3")
+    learning_cookie_secure: bool = Field(default=False)
+    learning_max_audio_bytes: int = Field(
+        default=16 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
+    )
+    learning_audio_retention_days: int = Field(default=7, ge=1, le=30)
+    learning_max_workers: int = Field(default=2, ge=1, le=8)
+    learning_max_pending: int = Field(default=8, ge=1, le=64)
+    learning_operation_timeout: float = Field(default=120, gt=0, le=1800)
+    learning_shutdown_timeout: float = Field(default=10, ge=0, le=60)
+    learning_allowed_origins: str = Field(
+        default="http://localhost:3010,http://127.0.0.1:3010"
+    )
+
     # Logging Configuration
     log_level: str = Field(
         default="INFO",
@@ -169,6 +187,12 @@ class Settings(BaseSettings):
         default="localhost,127.0.0.1",
         description="Comma-separated list of allowed hosts",
     )
+
+    @model_validator(mode="after")
+    def validate_learning_limits(self):
+        if self.learning_max_workers > self.learning_max_pending:
+            raise ValueError("Learning max_pending must be at least max_workers")
+        return self
 
     @field_validator("whisper_model")
     @classmethod

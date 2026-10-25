@@ -201,6 +201,10 @@ data/models/*
 !data/models/.gitkeep
 data/configs/*
 !data/configs/.gitkeep
+data/learning/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
 
 # Logs
 logs/

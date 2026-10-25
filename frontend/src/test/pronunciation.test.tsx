@@ -132,7 +132,7 @@ describe('pronunciation API contracts and recovery', () => {
 
   it('retains the recording, reference and completed analysis across app tabs', async () => {
     vi.spyOn(axios, 'post').mockResolvedValue({ data: basicResult })
-    render(<App />)
+    render(<App initialTab="chat" />)
     fireEvent.click(screen.getByRole('button', { name: '口语纠正' }))
     reference()
     await recordPronunciation()

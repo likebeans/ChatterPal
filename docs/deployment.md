@@ -138,7 +138,7 @@ npm run dev
 | 服务 | 本地地址 | 说明 |
 | --- | --- | --- |
 | React 开发界面 | http://localhost:3010 | Vite 将 `/api` 代理到本机 8010 |
-| API | http://localhost:8010 | `scripts/run_api.py` 固定绑定 `0.0.0.0:8010` |
+| API | http://localhost:8010 | `scripts/run_api.py` 默认绑定 `127.0.0.1:8010`，通过 `API_HOST` / `API_PORT` 调整 |
 | API 文档 | http://localhost:8010/docs | FastAPI Swagger UI |
 | API 健康检查 | http://localhost:8010/health | 组件初始化状态，不能证明远端 API Key 有效 |
 
@@ -147,6 +147,21 @@ npm run dev
 ```bash
 uv run python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8010/health').read().decode())"
 ```
+
+### INT2 学习流程与独立开发端口
+
+API 默认挂载 `/api/learning`，前端的“今日练习”可完成“描述周末”的多轮对话、结束反馈和关联重练。学习身份来自浏览器 HttpOnly cookie，记录保存到 `LEARNING_DB_PATH`，默认 `data/learning/learning.sqlite3`。API 重启后使用相同数据库和 cookie 找回已保存记录。未发送草稿只在当前页面内存中保存，刷新前请先提交。
+
+多个 worktree 可分别设置 `API_PORT`、`LEARNING_DB_PATH` 和 Vite 的 `CHATTERPAL_API_TARGET`。例如 macOS / Linux：
+
+```bash
+API_PORT=18200 LEARNING_DB_PATH=data/learning-int2.sqlite3 uv run python scripts/run_api.py
+CHATTERPAL_API_TARGET=http://127.0.0.1:18200 npm --prefix frontend run dev -- --host 127.0.0.1 --port 13200
+```
+
+使用 Vite 的同源 `/api` 代理；如浏览器直接跨源请求 API，将前端 Origin 加入 `LEARNING_ALLOWED_ORIGINS`。`LEARNING_MAX_WORKERS`、`LEARNING_MAX_PENDING` 和操作超时限制学习工作队列，pending 上限至少等于 worker 数量。部署范围是单个 API 实例与本地 SQLite。
+
+默认原音仅在数据库中临时保存 1 小时供回放，启用保留后默认 7 天；导出仅含文字与资产元数据。次日复习尚未接入，页面明确显示不可用。详细字段见 [学习 API 契约](learning_api_contract.md)，离线真实浏览器、容器 smoke 和完整回归命令见 [INT2 验收记录](int2_weekend_acceptance.md)。
 
 ### 可选 Gradio
 

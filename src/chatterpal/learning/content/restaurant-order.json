@@ -1,0 +1,40 @@
+{
+  "task_id": "restaurant-order",
+  "content_version": "1",
+  "title": "在餐厅点餐",
+  "description": "你在一家小餐厅点午餐。练习菜单：tomato soup $6、chicken sandwich $9、vegetable pasta $11；饮品有 water、tea $2、coffee $3。点一份主食或汤，说明饮品选择，并提出一个要求或询问一个问题。没有真实订单，也不会产生付款。",
+  "estimated_minutes": 8,
+  "learner_role": "给自己点午餐的顾客",
+  "coach_role": "只按练习菜单接单、帮助确认选择的服务员。虚构菜单事实：water 免费；chicken sandwich 含鸡肉、生菜和洋葱，洋葱可以去掉；vegetable pasta 默认加奶酪，可以不加；tomato soup 含奶油。其他配料、过敏原或替换要求没有资料时，说明需要向厨房核实，不保证安全或自行编造。",
+  "objectives": ["礼貌地说明餐点和数量", "说明饮品选择或明确不要饮品", "提出一项要求或澄清一个问题"],
+  "required_information": ["菜单内的餐点及数量", "饮品选择或不需要饮品", "一项要求或问题"],
+  "examples": [
+    "I'd like one chicken sandwich and some water, please. Could I have the sandwich without onions?",
+    "Could I have one vegetable pasta, please? No drink for me, thank you. Does the pasta have cheese?"
+  ],
+  "target_expressions": ["I'd like one ..., please.", "Could I have ..., please?", "Water, please. / No drink for me, thank you.", "Could I have it without ...?", "Does it come with ...?"],
+  "criteria": [
+    {"criterion_id": "meal", "description": "礼貌地说明菜单中的餐点和数量；允许不同的正确说法。"},
+    {"criterion_id": "drink", "description": "说明饮品选择，或明确不需要饮品。"},
+    {"criterion_id": "request", "description": "提出一项用餐要求或有关餐点的问题；不要求与示范相同。"}
+  ],
+  "opening": "Welcome! We have tomato soup, chicken sandwiches, and vegetable pasta. What would you like for lunch?",
+  "steps": [
+    {"criterion_id": "meal", "question": "What would you like, and how many portions?", "simpler_question": "Would you like one soup, one chicken sandwich, or one vegetable pasta?", "sentence_starter": "I'd like one ..., please."},
+    {"criterion_id": "drink", "question": "Would you like water, tea, coffee, or no drink?", "simpler_question": "What would you like to drink? You can also say no drink.", "sentence_starter": "I'd like ..., please. / No drink for me, thank you."},
+    {"criterion_id": "request", "question": "Do you have a request or a question about your meal?", "simpler_question": "Would you like to ask about ingredients or change something?", "sentence_starter": "Could I have it without ...? / Does it have ...?"}
+  ],
+  "read_aloud": {
+    "instruction": "跟读这句礼貌点餐示范。先核对识别文字，不把文字一致当作声学评估。",
+    "target_text": "I'd like one chicken sandwich and some water, please."
+  },
+  "free_response": {
+    "prompt": "从 tomato soup、chicken sandwich、vegetable pasta 中点一份午餐，说明饮品选择或不需要饮品，再提出一项要求或问题。可以用自己的说法，不必背示范。",
+    "required_information": ["餐点和数量", "饮品选择或明确不要", "要求或问题"]
+  },
+  "transfer_questions": [
+    {"question_id": "soup-lunch", "prompt": "On another visit, order one tomato soup for yourself, choose a drink or decline one, and ask a question about the soup.", "criterion_ids": ["meal", "drink", "request"]},
+    {"question_id": "pasta-change", "prompt": "Order one vegetable pasta for yourself, say whether you want water, tea, coffee, or no drink, and make a request about your meal.", "criterion_ids": ["meal", "drink", "request"]}
+  ],
+  "source_reference": "B2 authored content; task-coaching content version 1"
+}

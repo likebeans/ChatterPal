@@ -33,6 +33,7 @@ async function addApi(page, state) {
     const url = new URL(request.url());
     if (!url.pathname.startsWith('/api/')) return route.continue();
     let data;
+    if (url.pathname.startsWith('/api/learning/')) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Learning API not included in legacy regression fixtures' }) });
     if (url.pathname === '/api/voices') data = [{ id: 'longxiaochun', name: '测试音色' }];
     else if (url.pathname === '/api/scenarios') data = [
       { scenario_type: 'daily_conversation', difficulty_level: 'beginner', display_name: '日常会话 A' },
@@ -92,6 +93,7 @@ async function capture(page, section) {
       const state = { uploads: [], chatRequests: [] };
       await addApi(page, state);
       await page.goto(baseUrl);
+      await page.getByRole('button', { name: '对话练习', exact: true }).click();
       const chat = page.locator('.chat-interface');
       const pronunciation = page.locator('.pronunciation-correction');
       await chat.getByRole('heading', { name: '对话练习', exact: true }).waitFor();
@@ -210,6 +212,7 @@ async function capture(page, section) {
       const { context, page, errors } = await createPage(browser);
       await addApi(page, { uploads: [], chatRequests: [] });
       await page.goto(baseUrl);
+      await page.getByRole('button', { name: '对话练习', exact: true }).click();
       const chat = page.locator('.chat-interface');
       await page.evaluate(() => { window.__probe.holdPermission = true; });
       await keyboardActivate(chat.getByRole('button', { name: '开始录音', exact: true }));
@@ -238,6 +241,7 @@ async function capture(page, section) {
       const { context, page, errors } = await createPage(browser, { viewport: { width: 375, height: 812 } });
       await addApi(page, { uploads: [], chatRequests: [] });
       await page.goto(baseUrl);
+      await page.getByRole('button', { name: '对话练习', exact: true }).click();
       await page.getByRole('heading', { name: '对话练习', exact: true }).waitFor();
       const initialOverflow = await page.evaluate(() => ({ viewport: innerWidth, width: document.documentElement.scrollWidth }));
       assert.ok(initialOverflow.width <= initialOverflow.viewport);
@@ -262,6 +266,7 @@ async function capture(page, section) {
       const { context, page, errors } = await createPage(browser, { force48k: true });
       await addApi(page, { uploads: [], chatRequests: [] });
       await page.goto(baseUrl);
+      await page.getByRole('button', { name: '对话练习', exact: true }).click();
       await page.getByRole('button', { name: '口语纠正', exact: true }).click();
       const pronunciation = page.locator('.pronunciation-correction');
       await keyboardActivate(pronunciation.getByRole('button', { name: '开始录音', exact: true }));

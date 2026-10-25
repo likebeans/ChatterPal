@@ -1,0 +1,40 @@
+{
+  "task_id": "weekend",
+  "content_version": "1",
+  "title": "描述周末",
+  "description": "和一位朋友聊聊刚过去的周末：做了什么、和谁一起，以及自己的感受。可以讲真实经历，也可以使用虚构经历。",
+  "estimated_minutes": 8,
+  "learner_role": "分享周末经历的朋友",
+  "coach_role": "对你的经历感兴趣、一次追问一个细节的朋友",
+  "objectives": ["说清一项过去的周末活动", "说明和谁一起或自己一个人", "表达对活动的感受或原因"],
+  "required_information": ["一项周末活动", "同行的人或独自活动", "一种感受或原因"],
+  "examples": [
+    "I went hiking with some friends. It was really enjoyable. We explored a trail in the mountains near the city.",
+    "I stayed at home on Sunday and cooked lunch by myself. I felt relaxed because I had time to rest."
+  ],
+  "target_expressions": ["I went ...", "I spent the weekend ...", "I went with ... / I went by myself.", "It was ... because ..."],
+  "criteria": [
+    {"criterion_id": "activity", "description": "用自己的话说明刚过去的周末做了什么；活动不必与示范一致。"},
+    {"criterion_id": "company", "description": "说明和谁一起，或明确是自己一个人。"},
+    {"criterion_id": "feeling", "description": "表达对这次活动的感受或原因；不要求特定形容词。"}
+  ],
+  "opening": "What did you do over the weekend?",
+  "steps": [
+    {"criterion_id": "activity", "question": "What did you do over the weekend?", "simpler_question": "What did you do on Saturday or Sunday?", "sentence_starter": "Last weekend, I ..."},
+    {"criterion_id": "company", "question": "Who did you spend that time with?", "simpler_question": "Were you with someone, or by yourself?", "sentence_starter": "I was with ... / I was by myself."},
+    {"criterion_id": "feeling", "question": "How did you feel about it, and why?", "simpler_question": "Was it fun, relaxing, or something else?", "sentence_starter": "I felt ... because ..."}
+  ],
+  "read_aloud": {
+    "instruction": "跟读这句示范。文字差异只用于核对转写，不代表已测量发音准确率。",
+    "target_text": "I went hiking with some friends. It was really enjoyable."
+  },
+  "free_response": {
+    "prompt": "朋友问你上个周末怎么样。请讲一项活动、和谁一起或独自活动，以及自己的感受。可以选择任何活动，不必模仿示范。",
+    "required_information": ["周末活动", "同行的人或独自活动", "感受或原因"]
+  },
+  "transfer_questions": [
+    {"question_id": "another-day-off", "prompt": "Tell another friend about last weekend using different words. What did you do, who were you with, and how did you feel?", "criterion_ids": ["activity", "company", "feeling"]},
+    {"question_id": "quiet-weekend", "prompt": "Tell a friend about a quiet weekend at home. What did you do, were you alone or with someone, and how was it?", "criterion_ids": ["activity", "company", "feeling"]}
+  ],
+  "source_reference": "services/ai_correction.py:daily_conversation/intermediate"
+}

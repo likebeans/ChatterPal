@@ -74,7 +74,7 @@ describe('chat concurrency and resource ownership', () => {
   it('tab change keeps submitted turns and their session consistent while releasing recording', async () => {
     const second = deferred<{ data: typeof chat }>()
     const post = vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: chat }).mockReturnValueOnce(second.promise).mockResolvedValue({ data: { ...chat, response: 'Third reply' } })
-    render(<App />)
+    render(<App initialTab="chat" />)
     send('first')
     await screen.findByText('Hi.')
     send('second')

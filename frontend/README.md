@@ -1,81 +1,65 @@
-# ChatterPal 前端开发与 B 任务验收
+# ChatterPal 前端开发与 INT2 验收
 
-本 worktree 对应 `fix/frontend-audio-state`。修改限于 `frontend/`，保持现有 HTTP 字段和页面布局。聊天与发音分析使用共用的录音、播放、对象 URL 和请求生命周期逻辑。
+INT2 在 `ChatterPal-product-integration` 工作树接入真实学习接口，优先完成“描述周末”的开练、对话、提示、结束反馈、原句重练与历史恢复。原有自由对话、口语纠正和音频生命周期继续保留。共同边界见 `../docs/learning_api_contract.md`。
 
-关键实现位于 `src/hooks/useAudioRecording.ts`、`useAudioPlayback.ts`、`useLatestRequest.ts` 和 `useObjectUrls.ts`；`src/audio/` 负责实际重采样、PCM16 WAV 编码及可取消 Worker；`src/api/` 明确现有分析响应字段与失败显示。两页保留组件状态，隐藏时停止录音与播放；分析请求随输入和页面变化失效，已提交聊天在切页后保留直至完成，清空和卸载仍取消。
-
-## 开发与回归
-
-在本目录执行：
+## 开发与检查
 
 ```bash
-npm ci
+npm ci --no-audit --no-fund
 npm test
-npm run build
 npm run lint
-npm run dev -- --host 127.0.0.1 --port 3012 --strictPort
+npm run build
+CHATTERPAL_API_TARGET=http://127.0.0.1:8010 \
+  npm run dev -- --host 127.0.0.1 --port 13204 --strictPort
 ```
 
-开发服务器仍把 `/api` 代理到 `http://localhost:8010`。浏览器自动验收会按冻结契约替换 API 响应，无需运行 Python、配置密钥或下载 ASR 模型；真实后端联调应在 A+B 集成后另行执行。
+Vite 默认将 `/api` 代理到 `http://127.0.0.1:8010`，可用 `CHATTERPAL_API_TARGET` 指向独立后端。学习服务需允许页面对应的开发 Origin；也可由后端同源提供 `dist/`。
 
-## 浏览器录音验收
+## 模块与接口
 
-开发服务器启动后，在另一个终端执行：
+| 文件 | 职责 |
+| --- | --- |
+| `src/learning/types.ts` | INT2 会话、反馈、尝试、音频、操作和草稿类型 |
+| `src/learning/client.ts` | HTTP 映射、共享身份握手、错误状态及 `record.data` 解析 |
+| `src/learning/validation.ts` | 嵌套响应校验，接受正式接口的可空音频字段和附加 metadata |
+| `src/learning/useLearningFlow.ts` | 流程状态、CAS revision、pending 恢复及迟到响应保护 |
+| `src/learning/usePracticeDrafts.ts` | 按身份、会话、原句、重点和方式隔离的内存草稿 |
+| `src/learning/PracticeInput.tsx` | 受控文字/录音输入，WAV 编码、试听及显式提交 |
+| `src/learning/LearningWorkspace.tsx` | 任务、对话、原句与重练关系、历史、进度及设置 |
 
-```bash
-npx playwright install chromium
-npm run test:browser -- http://127.0.0.1:3012
-```
+学习接口位于 `/api/learning`。先调用 `POST /bootstrap`，后续身份由 HttpOnly cookie 确认。历史详情从 `GET /records?kind=session&session_id=...` 的 `record.data` 读取，不把 record_id 当作 session_id。
 
-也可以使用本机现有 Chrome，避免额外下载浏览器：
+写操作统一附带 UUID `request_id`。HTTP revision 从 1 开始，和内部领域 revision 分开；提交下一次操作前先取得当前 HTTP revision。`result_type=session` 是完整快照；提示返回 `{hint:string}`，尝试返回 attempt，范读返回音频 metadata。这些结果只要关联 session_id，就会重新读取会话。未知的 result_type 也保留结果并刷新会话。
+
+`POST /sessions/{id}/finish` 保存已结束任务和有原句依据的反馈；每个重点关联的原话由服务端保存为首次尝试。自由表达和跟读分别关联同源句、同重点、同方式的 parent attempt。界面展示任务原话、重点片段、首次尝试和每次重练的接续关系；原音对应完整原话。反馈或评价不可用时展示原因，仍可以从用户原话进入重练，并可以重新获取不可用的反馈。
+
+`GET /reviews/due` 当前返回 503 `review_unavailable`，界面明确显示尚未接入，不提供保存次日复习的承诺。进度只显示服务端保存的事实计数和对应记录，未接入的复习/迁移计数为 0，不生成能力总分。
+
+## 草稿与恢复
+
+未发送的文字和已准备录音保存在当前工作区内存，按学习身份、会话、原句/重点及练习方式隔离。提示、新 revision、记录刷新、内部历史切页和顶层切页不会清除已准备的草稿。顶层切页和内部切页仍停止麦克风、取消未完成录音处理并停止播放。只有对应 turn/attempt 成功确认且草稿版本一致时才清除该份草稿；换身份或确认全量删除后清除全部旧草稿。整页刷新不会持久化未发送的录音正文。
+
+localStorage 仅保存恢复操作所需的请求、操作、动作、会话、身份和草稿 receipt，不保存身份令牌、原文、转写或音频。浏览器存储受限时保留内存恢复能力。响应不确定时查询原操作或原 request_id，明确查无请求且当前页保留正文时才使用原编号重试，不自动新建付费操作。
+
+401 暂停无效轮询，提供直接重新握手入口；新身份不会继承旧 pending 或旧正文。409 和异步 `revision_conflict` 提供刷新本次会话的恢复操作，保留未发送内容。404/410、其它终止错误停止无效查询并说明核对历史的下一步。删除使所有在途响应失效，迟到结果不会恢复已删除记录。
+
+默认文字记录保留，原音仅供 1 小时临时回放；启用原音保留后保存 7 天。音频到期时显示说明，文字和重练记录继续可读。PCM16、单声道、16 kHz WAV 编码及可取消 Worker 复用既有实现。
+
+## 自动验收
+
+最终 `npm test` 共 133 项通过，包含原有 59 项回归，以及学习流程、草稿/恢复、即时文字建议、11 项并发对抗回归和真实 HTTP 形状边界测试。`npm run lint` 和 `npm run build` 检查所有前端代码与类型。验收结果及完整复现命令见 [INT2 验收记录](../docs/int2_weekend_acceptance.md)。
+
+已有学习浏览器脚本使用离线 INT2 契约 fixture，只在测试驱动中拦截 API，不属于真实教学服务或线上记录。生产页面不加载 fixture。
 
 ```bash
 CHROME_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
-  npm run test:browser -- http://127.0.0.1:3012
+  BROWSER_OUTPUT_DIR=/tmp/chatterpal-int2-contract-browser \
+  npm run test:learning:browser -- http://127.0.0.1:13204
+npm run test:browser -- http://127.0.0.1:13204
 ```
 
-`BASE_URL` 可以指定页面地址；命令行地址优先。`BROWSER_OUTPUT_DIR` 可指定截图、上传 WAV 和 `results.json` 的输出目录；默认创建独立临时目录，并在命令输出中打印其路径。`PLAYWRIGHT_MODULE_PATH` 仅用于复用已有 Playwright 安装，通常无需设置。
+脚本覆盖提示后草稿保留、pending 刷新恢复不重复写入、结束自动保存首次尝试、两次关联重练、复习未接入说明、真实测试麦克风 WAV 上传和 0.75× 播放、录音跨内部页面恢复、内部和顶层切页释放资源。检查 375px 与横屏无水平溢出，启用 reduced motion，输出截图和 `results.json`。旧浏览器脚本继续覆盖自由对话、口语纠正和音频竞态。
 
-浏览器使用 Chromium 的测试麦克风设备，实际执行 `getUserMedia`、Web Audio 采集、录音按钮键盘操作、音频播放与 multipart 上传。测试强制一路真实采集采用 48 kHz，再验证输出是单声道 PCM16 16 kHz WAV，并用 `decodeAudioData` 解码、核对采集和输出时长。上传文件也会保存，方便独立检查：
+真实 APIServer + SQLite + 受控 provider 的 socket 验收使用 `node ../scripts/verify_int2_browser.cjs`（需要在仓库安装 Python 环境，或通过 INT2_PYTHON 指定解释器）。驱动自行启动隔离服务，完成三轮对话、反馈、两次关联重练、刷新和实际 API 重启；默认端口为 18200/13200。真实云端质量、真人发音学习效果与长期复习服务不属于这些离线测试的结论。
 
-```bash
-ffprobe -v error \
-  -show_entries stream=codec_name,sample_rate,channels,bits_per_sample:format=duration \
-  -of json /path/to/output/upload-1.wav
-```
-
-其余自动流程覆盖：
-
-- 录音中切页后流和 AudioContext 释放，返回后保留聊天与已完成分析。
-- 清空后的晚响应不恢复消息或 session；新聊天请求不携带旧 session。已提交的聊天在切页后继续完成，返回时可见回复，避免与服务端会话历史脱节。
-- 超过 1 秒的录音在可取消的 Worker 内转换；处理结束、取消、切页和卸载均终止 Worker。60 秒 PCM 段落用采集边界注入验证停止与切页仍可交互。
-- 场景列表和播放失败后重试成功，清除对应的旧错误提示。
-- 重录使旧分析失效；场景 A 的晚响应不覆盖场景 B。
-- 录音 URL 直接回放，清空或重录时撤销对象 URL。
-- 权限晚返回和录音初始化失败后的清理，再次录音能够恢复。
-- 基础与 AI 分析使用当前字段展示真实转写、建议及“评分尚未校准”说明。
-- 375px 与横屏视口无横向溢出，减少动态效果模式可用，发音页录音切页后释放资源，浏览器无未捕获异常。
-
-## 本轮验证记录
-
-2026-10-23，基于 `a90b85c` 的 B worktree：
-
-- 原始页面的 10 项回归测试均复现失败；修复后扩展为 58 项，5 个测试文件全部通过。
-- `npm ci --no-audit --no-fund` 干净安装通过；`npm run build`、`npm run lint`、浏览器 `.cjs` 脚本的 ESLint 与 `git diff --check` 通过。
-- 对最终生产构建运行 4 组 Chromium 浏览器验收通过，使用测试麦克风与契约 API 响应，无未捕获页面异常。
-- 独立审查确认的会话同步、长段落阻塞、场景恢复提示和播放恢复提示四项问题已修复并加入回归。60 秒 PCM 输入的停止点击在开发与生产构建中实测约 0.8–1.1ms，转换期间切页能终止 Worker；该样本在采集边界注入，不代表等待了 60 秒真人录音。
-- 强制 48 kHz 采集后的上传文件经浏览器解码、ffprobe 检查和 ffmpeg 解码，确认为 `pcm_s16le`、16 kHz、单声道、16 bit，采集与输出时长一致。
-- 已查看桌面与移动截图，保留聊天 800px、分析 900px 的原有最大宽度；375px 与横屏视口无横向溢出。
-
-## 手工复查
-
-1. 打开对话练习，使用 Tab、Enter 或 Space 开始和停止录音；发送完成后播放用户录音。
-2. 再次开始录音，直接切到口语纠正，确认浏览器麦克风指示停止；返回对话练习，历史仍在。
-3. 发出请求后清空，再发新消息；旧请求完成后不应插入回复，也不应恢复旧会话。
-4. 在口语纠正输入参考文本，录音、停止、回放，分别执行基础和 AI 分析；切页往返后保留结果。
-5. 慢分析期间重录，或在两个场景之间快速切换；旧结果不能覆盖新选择。请求失败后可以重试。
-6. 等待麦克风授权时切页或取消，随后允许权限；不应留下活动流，也不应自动上传。
-
-测试麦克风不代表已验证实体麦克风、真人发音识别质量或所有移动浏览器。真实服务端 ASR/LLM/TTS 和分析服务可用性仍需集成验收。现阶段分数保留接口数值并明确标示尚未校准，不代表完成了评分可信度任务 G。
-
-本 worktree 从 `a90b85c` 创建，与先前已创建的 A worktree 一致；创建时主目录的聊天后端优化尚未提交，未被复制或改动。集成人仍需保存并保留那批后端基线改动，再执行 A+B 的真实接口联调。
+调用本地 `.env` 中真实提供商的驱动为 `node ../scripts/verify_int2_live.cjs`，默认端口 18210/13210，使用固定合成语音进入真实录音 UI；会调用外部服务。2026-10-25 已以 Qwen3.8-27B、Whisper base 与 Edge TTS 通过完整验收，结果、耗时、依赖及运行命令见[真实提供商验收记录](../docs/int2_live_provider_acceptance_2026-10-25.md)。

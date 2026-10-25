@@ -37,7 +37,7 @@ export function useAudioPlayback(active: boolean) {
     }
   }, [])
 
-  const play = useCallback(async (source: string, id: string) => {
+  const play = useCallback(async (source: string, id: string, rate = 1) => {
     if (playingRef.current === id) { stop(); return }
     stop()
     const audio = audioRef.current
@@ -49,6 +49,7 @@ export function useAudioPlayback(active: boolean) {
       setError('音频播放失败，请重试或重新录制')
     }
     audio.src = audioSource(source)
+    audio.playbackRate = rate
     audio.onended = () => { if (sequenceRef.current === sequence) stop() }
     audio.onerror = failed
     playingRef.current = id
