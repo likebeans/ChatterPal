@@ -131,7 +131,7 @@ it('hides the next prompt after an assessed response and does not submit another
   expect(screen.getByText(/已保存文字达成证据/)).toBeVisible()
   expect(screen.getByRole('button', { name: '提交复习回答' })).toBeDisabled()
   expect(screen.getByRole('button', { name: '显示参考表达并记录提示' })).toBeDisabled()
-  expect(screen.getByRole('textbox', { name: '我的复习回答' })).toHaveValue('')
+  await waitFor(() => expect(screen.getByRole('textbox', { name: '我的复习回答' })).toHaveValue(''))
 })
 
 it('offers repeated practice when authored variants are exhausted without claiming independence', async () => {
