@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from .response_json import load_provider_json
 from .sessions import SessionConflict, TaskSession
 from .tasks import Text
+from .text_advice import require_text_advice, require_text_suggestion
 
 
 class CoachingResponseError(ValueError):
@@ -135,6 +136,8 @@ def parse_coach_response(session: TaskSession, text: str, raw: str) -> CoachRepl
                 raise ValueError("The suggestion must quote the current learner text")
             if suggestion.original == suggestion.corrected:
                 raise ValueError("The suggestion must describe a change")
+            require_text_advice(suggestion.explanation)
+            require_text_suggestion(suggestion.original, suggestion.corrected)
     except ValueError:
         return CoachReply(
             reply=envelope.reply,

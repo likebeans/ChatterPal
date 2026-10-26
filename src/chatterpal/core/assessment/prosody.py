@@ -118,6 +118,10 @@ class ProsodyAnalyzer(AssessmentBase):
                     else:
                         audio_array = audio_array.astype(np.int16)
 
+                # 按时间帧混合声道，避免将交错声道当作连续采样。
+                if audio_array.ndim == 2:
+                    audio_array = audio_array.mean(axis=1).astype(np.int16)
+
                 # 保存为WAV文件
                 with wave.open(temp_wav_path, "w") as wav_file:
                     wav_file.setnchannels(1)  # 单声道

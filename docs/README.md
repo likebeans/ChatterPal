@@ -2,6 +2,15 @@
 
 本目录包含 ChatterPal 项目的完整文档。
 
+## 当前入口与验收
+
+- [当前功能与运行边界](../README.md) — React + FastAPI 的“今日练习”为任务学习主入口；Gradio 为独立聊天与分析入口。
+- [2026-10-26 收尾验收](closeout_acceptance_2026-10-26.md) — 当前补丁范围、即时纠正校验、实际页面复验与可追溯结果。
+- [录音核对与 Gradio 验收记录](live_transcript_gradio_acceptance_2026-10-26.md) — 早前真实提供商运行、合成语音与设备边界。
+- [学习 API 契约](learning_api_contract.md) — 已接通的身份、任务、反馈、重练、复习和操作语义。
+
+下方的 2026-10-23 优化计划保留历史调查与分工，后续工作以当前功能和最新验收为准。
+
 ## 文档结构
 
 ### 📚 用户文档
@@ -16,6 +25,7 @@
 - [`worktree_optimization_plan.md`](worktree_optimization_plan.md) - 多 worktree 任务分工、文件归属、验收标准与集成顺序
 - [`integration_round_1.md`](integration_round_1.md) - 聊天基线与 A–E 首次集成验收的历史结果和失败清单
 - [`integration_recovery.md`](integration_recovery.md) - 36 项失败修复、覆盖率恢复与重新联合验收
+- [`live_transcript_gradio_acceptance_2026-10-26.md`](live_transcript_gradio_acceptance_2026-10-26.md) - 录音核对三入口的真实提供商验收与 Gradio 主页面接线
 - [`technical_implementation_summary.md`](technical_implementation_summary.md) - 技术实现总结
 
 ### 🔬 技术文档

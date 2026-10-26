@@ -3,7 +3,6 @@
 import json
 import re
 import unicodedata
-from collections import Counter
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -13,6 +12,7 @@ from .contracts import CriterionResult, Evaluation, Feedback, Focus
 from .ports import LearningProvider
 from .response_json import load_provider_json
 from .sessions import TaskSession
+from .text_advice import require_text_advice, require_text_suggestion, text_words
 
 QuotedText = Annotated[
     str, StringConstraints(strict=True, min_length=1, max_length=12000)
@@ -25,19 +25,6 @@ Explanation = Annotated[
 ]
 Evidence = Annotated[str, StringConstraints(strict=True, max_length=12000)]
 TurnId = Annotated[str, StringConstraints(strict=True, min_length=1, max_length=128)]
-
-# Provider narratives have no acoustic evidence. Even a valid text quotation must
-# not launder a pronunciation claim or a numeric ability score into the result.
-_UNSUPPORTED_ADVICE = re.compile(
-    r"\b(?:pronunci\w*|phonem\w*|phonetic\w*|acoustic\w*|prosod\w*|"
-    r"intonation|fluency|vowels?|consonants?|accents?|articulation|"
-    r"syllables?|scores?|ratings?)\b|\b(?:word|sentence) stress\b|"
-    r"\d+(?:\.\d+)?\s*(?:%|/\s*(?:10|100)\b)|"
-    r"\baccuracy\s*(?:is\s*)?[:=]?\s*\d|准确率\s*[:：]?\s*\d|"
-    r"/[^/\n]{1,24}/|[ɑɐɒæəɚɛɜɝɞɪɔœɶøʊʌʏʔθðʃʒŋɹɾ]|"
-    r"发音|音素|音标|声学|语调|重音|元音|辅音|流利度|口音|评分|分数|得分",
-    re.IGNORECASE,
-)
 
 
 class _Response(BaseModel):
@@ -75,22 +62,6 @@ class _AttemptEvaluation(_Response):
     result: Literal["met", "not_met", "unverified"]
     reason: Explanation
     evidence: Evidence
-
-
-def _require_text_advice(text: str) -> None:
-    if _UNSUPPORTED_ADVICE.search(text):
-        raise ValueError(
-            "Only text advice without acoustic claims or scores is allowed"
-        )
-
-
-def _require_text_suggestion(original: str, suggested: str) -> None:
-    if not _UNSUPPORTED_ADVICE.search(suggested):
-        return
-    # Keep topic words such as "accent workshop" when the change only reorders
-    # the learner's existing words. New acoustic judgements are not text advice.
-    if Counter(_words(original)) != Counter(_words(suggested)):
-        _require_text_advice(suggested)
 
 
 def _has_text(text: str) -> bool:
@@ -183,7 +154,7 @@ def _parse_strength(raw: object, turns: dict[str, str]) -> str:
     text = turns.get(strength.source_turn_id, "")
     if not _is_quote(strength.quote, text):
         raise ValueError("A strength must quote an actual learner turn")
-    _require_text_advice(strength.explanation)
+    require_text_advice(strength.explanation)
     return f"「{strength.quote}」：{strength.explanation}"
 
 
@@ -201,8 +172,8 @@ def _parse_focuses(raw: object, turns: dict[str, str]) -> tuple[list[Focus], boo
                 raise ValueError("A focus must quote its actual learner turn")
             if focus.original.strip() == focus.suggested:
                 raise ValueError("A focus must suggest a text change")
-            _require_text_advice(focus.explanation)
-            _require_text_suggestion(focus.original, focus.suggested)
+            require_text_advice(focus.explanation)
+            require_text_suggestion(focus.original, focus.suggested)
             key = (focus.source_turn_id, focus.original)
             if key in seen:
                 raise ValueError("Duplicate focus")
@@ -325,8 +296,7 @@ def _unverified_attempt(reason: str, *, source: Literal["text", "model"]) -> Eva
 
 
 def _words(text: str) -> list[str]:
-    normalized = unicodedata.normalize("NFKC", text).casefold().replace("’", "'")
-    return re.findall(r"\w+(?:'\w+)*", normalized)
+    return text_words(text)
 
 
 def _read_aloud_tokens(text: str) -> list[str]:
@@ -445,7 +415,7 @@ def evaluate_attempt(
         )
     try:
         evaluation = _AttemptEvaluation.model_validate(load_provider_json(raw))
-        _require_text_advice(evaluation.reason)
+        require_text_advice(evaluation.reason)
         if evaluation.result != "unverified" or evaluation.evidence:
             if not _is_quote(evaluation.evidence, transcript):
                 raise ValueError("Evaluation evidence must quote the new transcript")

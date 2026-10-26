@@ -579,6 +579,109 @@ def test_learner_topics_can_mention_an_accent_without_becoming_acoustic_advice()
 
 
 @pytest.mark.parametrize(
+    "original,suggested,explanation",
+    [
+        (
+            "I get 10% off yesterday.",
+            "I got 10% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I attended a accent workshop.",
+            "I attended an accent workshop.",
+            "Use an with this noun phrase.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "Use an before a vowel sound.",
+        ),
+    ],
+)
+def test_ordinary_grammar_advice_preserves_learner_topics(
+    original, suggested, explanation
+):
+    session = completed_session(
+        [original, "I went with my sister.", "It was peaceful."]
+    )
+    payload = feedback_payload(session)
+    payload["focuses"][0].update(
+        original=original,
+        suggested=suggested,
+        explanation=explanation,
+        category="grammar",
+    )
+    feedback = generate_feedback(Provider(payload), session, 1)
+    assert feedback.status == "available"
+    assert len(feedback.focuses) == 1
+    assert feedback.focuses[0].suggested == suggested
+    assert feedback.focuses[0].explanation == explanation
+
+
+@pytest.mark.parametrize(
+    "original,suggested,explanation",
+    [
+        (
+            "I get 5% off yesterday.",
+            "I got .5% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "I got -10% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I get 100% off yesterday.",
+            "I got 1,100% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I got 5% off yesterday.",
+            "I got .5% off yesterday.",
+            "Keep the discount.",
+        ),
+        (
+            "I got 10% off yesterday.",
+            "I got -10% off yesterday.",
+            "Keep the discount.",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "Your accuracy is 10% off the expected level.",
+            "Try a different expression.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "You mispronounce words whenever you use 'an' before a vowel sound.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "Use an before a vowel sound; yours was too nasal.",
+        ),
+    ],
+)
+def test_grammar_exceptions_do_not_hide_changed_values_or_acoustic_claims(
+    original, suggested, explanation
+):
+    session = completed_session(
+        [original, "I went with my sister.", "It was peaceful."]
+    )
+    payload = feedback_payload(session)
+    payload["focuses"][0].update(
+        original=original,
+        suggested=suggested,
+        explanation=explanation,
+        category="grammar",
+    )
+    feedback = generate_feedback(Provider(payload), session, 1)
+    assert feedback.status == "partial"
+    assert feedback.focuses == []
+
+
+@pytest.mark.parametrize(
     "suggested",
     [
         "Your accent is terrible.",

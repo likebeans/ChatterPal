@@ -116,7 +116,7 @@ class ChatterPalApp:
                     """
                     # 🎯 ChatterPal - AI英语口语练习系统
                     
-                    专业的AI驱动英语口语练习平台，提供智能对话、发音评估和纠错指导。
+                    英语口语练习平台，提供智能对话、识别文本核对和练习反馈；未测量的能力维度会明确标注为不可评估。
                     """
                 )
                 
@@ -126,13 +126,11 @@ class ChatterPalApp:
                     with gr.Tab("💬 对话练习"):
                         self._create_chat_interface()
                     
-                    # Score tab  
-                    with gr.Tab("📊 发音评分"):
-                        self._create_score_interface()
-                    
+                    # Score tab
+                    self.score_tab.create_interface(label="📊 发音评分")
+
                     # Correct tab
-                    with gr.Tab("🔧 发音纠错"):
-                        self._create_correct_interface()
+                    self.correct_tab.create_interface(label="🔧 发音纠错")
 
             return app
 
@@ -299,82 +297,6 @@ class ChatterPalApp:
             api_name="clear_chat",
             concurrency_id="gradio_chat",
             concurrency_limit=1,
-        )
-
-    def _create_score_interface(self):
-        """Create score interface content."""
-        gr.Markdown(
-            """
-            ## 📊 发音评分
-            
-            上传音频文件或录制语音，获得专业的发音质量评估和详细分析报告。
-            """
-        )
-        
-        with gr.Row():
-            with gr.Column():
-                audio_input = gr.Audio(label="🎤 音频输入", type="filepath")
-                text_reference = gr.Textbox(
-                    label="📝 参考文本",
-                    placeholder="请输入要评估的参考文本...",
-                    lines=3
-                )
-                evaluate_btn = gr.Button(value="📊 开始评估", variant="primary")
-            
-            with gr.Column():
-                score_output = gr.Textbox(
-                    label="📈 评分结果",
-                    lines=10,
-                    interactive=False
-                )
-        
-        def evaluate_pronunciation(audio, text):
-            if not audio or not text:
-                return "请提供音频文件和参考文本"
-            return f"演示评分结果：\n\n参考文本: {text}\n\n这是一个演示输出。请配置API密钥以启用完整功能。"
-        
-        evaluate_btn.click(
-            evaluate_pronunciation,
-            inputs=[audio_input, text_reference],
-            outputs=[score_output]
-        )
-
-    def _create_correct_interface(self):
-        """Create correction interface content."""
-        gr.Markdown(
-            """
-            ## 🔧 发音纠错
-            
-            获得详细的发音纠错建议，包括音素级别的分析和改进指导。
-            """
-        )
-        
-        with gr.Row():
-            with gr.Column():
-                audio_input = gr.Audio(label="🎤 音频输入", type="filepath")
-                text_reference = gr.Textbox(
-                    label="📝 参考文本",
-                    placeholder="请输入要纠错的参考文本...",
-                    lines=3
-                )
-                correct_btn = gr.Button(value="🔧 开始纠错", variant="primary")
-            
-            with gr.Column():
-                correction_output = gr.Textbox(
-                    label="🔧 纠错建议",
-                    lines=10,
-                    interactive=False
-                )
-        
-        def correct_pronunciation(audio, text):
-            if not audio or not text:
-                return "请提供音频文件和参考文本"
-            return f"演示纠错结果：\n\n参考文本: {text}\n\n这是一个演示输出。请配置API密钥以启用完整功能。"
-        
-        correct_btn.click(
-            correct_pronunciation,
-            inputs=[audio_input, text_reference],
-            outputs=[correction_output]
         )
 
     def launch(self, **kwargs):

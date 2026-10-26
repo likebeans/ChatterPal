@@ -12,11 +12,11 @@ ChatterPal 是一个英语口语练习项目，提供 React + FastAPI 学习流�
 - **记录恢复**：匿名 HttpOnly cookie 身份，SQLite 保存会话、反馈、尝试、操作状态及私有音频；支持刷新、API 重启、JSON 导出和删除个人数据。
 - **复习与进度**：明确保存重点表达后次日到期；只有延迟作答、未使用本轮提示且有新表达依据时，才按约 3 天、7 天排程。提示和看答案由服务端记录。当前每项任务只有两道人工迁移问题，用完后继续练习会标为重复问题，不增加独立迁移记录。
 - **自由聊天**：文字与录音输入、音色选择和音频播放。进程内会话有数量、闲置时间及历史长度限制；需要持久学习记录时使用任务入口。
-- **表达分析**：比较参考文本与机器转写，提供文字建议；可选声学工具提供可用的原始测量。每个维度说明来源、证据、状态和适用范围。
+- **表达分析**：比较参考文本与机器转写，提供文字建议；可选声学工具提供可用的原始测量。独立 Gradio 主页面的评分、纠错入口已接入现有服务，支持录音与上传音频，纠错参考文本可留空。即时纠正和结束反馈共用文字建议校验，不合格建议明确不可用并保留有效教练回复。每个维度说明来源、证据、状态和适用范围。
 
 当前没有经过人工标注数据校准的发音总分、音素准确率或能力等级。ASR 置信度不代表英语能力，文本匹配率也不代表声学发音准确率；缺失的维度返回 `null` 和原因。任务目标达成、同题重练与延迟新题证据分别记录，不合成“掌握率”。
 
-2026-10-25，“描述周末”已通过 Qwen3.8-27B、Whisper base 和在线 Edge TTS 的[真实提供商完整验收](docs/int2_live_provider_acceptance_2026-10-25.md)，包含浏览器录音上传、三轮对话、结束反馈、两次关联重练、播放以及刷新/API 重启恢复。该记录使用合成语音输入，不能证明真人发音效果或生产负载下的延迟。
+2026-10-25，“描述周末”已通过 Qwen3.8-27B、Whisper base 和在线 Edge TTS 的[真实提供商完整验收](docs/int2_live_provider_acceptance_2026-10-25.md)，包含浏览器录音上传、三轮对话、结束反馈、两次关联重练、播放以及刷新/API 重启恢复。2026-10-26 的[录音核对三入口与 Gradio 真实提供商记录](docs/live_transcript_gradio_acceptance_2026-10-26.md)保留了修改确认、原音复用、草稿恢复及服务接线结果；其临时原始证据目前不可读取，本次收尾另以受控提供商复验实际页面，见[最新验收](docs/closeout_acceptance_2026-10-26.md)。这些运行使用合成语音输入，不能证明真人发音效果或生产负载下的延迟。
 
 ## 快速开始
 
@@ -125,12 +125,16 @@ npm run build
 npm run lint
 ```
 
-后端默认覆盖率门槛为 80%；当前录音核对工作树全量 1978 项通过、覆盖率 87.36%，前端 186 项及 build/lint 通过，专项实际浏览器三入口验收也通过，详见[CI 修复与录音核对验收](docs/transcript_confirmation_acceptance_2026-10-26.md)。main `d98b13b` 的历史结果保留在[剩余优化验收](docs/remaining_optimizations_acceptance_2026-10-26.md)。受控提供商的真实浏览器驱动为 `scripts/verify_int2_browser.cjs`、`scripts/verify_learning_review_browser.cjs` 和录音核对专项 `scripts/verify_transcript_confirmation_browser.cjs`；真实提供商驱动为 `scripts/verify_int2_live.cjs`。后者会调用已配置的外部服务，需要可用凭据、Whisper 模型、Chrome 和音频工具；可用 `INT2_ENV_FILE` 指定本地配置文件。真实服务验收与受控基准分别记录。
+后端默认覆盖率门槛为 80%；本次收尾工作树全量 2057 项通过、零失败或跳过，覆盖率 87.41%，包含即时建议校验及持久化重放、Gradio 主入口 HTTP 上传、双声道时长/基频和聊天会话回归。前端 186 项、build/lint 及 Gradio、React 实际浏览器验收本轮均已复跑通过，详见[收尾与即时纠正校验验收](docs/closeout_acceptance_2026-10-26.md)。这是基于 `main@73ab2d8` 的收尾改动的本地验收结果；主线历史 CI 见[录音核对验收](docs/transcript_confirmation_acceptance_2026-10-26.md)，`main@d98b13b` 的历史结果保留在[剩余优化验收](docs/remaining_optimizations_acceptance_2026-10-26.md)。
+
+受控提供商的浏览器驱动包括 `scripts/verify_int2_browser.cjs`、`scripts/verify_learning_review_browser.cjs` 和 `scripts/verify_transcript_confirmation_browser.cjs`。真实提供商录音核对使用 `scripts/verify_transcript_confirmation_live.cjs`，通过 `TRANSCRIPT_ENV_FILE` 指向原私有配置。`scripts/verify_gradio_analysis_browser.cjs` 默认受控，设置 `GRADIO_ENV_FILE` 后使用真实提供商。真实验收需要可用凭据、Whisper 模型、Chrome 和音频工具；配置只在本地子进程读取。真实服务验收与受控基准分别记录。
 
 ## 文档
 
 - [部署与配置](docs/deployment.md)
 - [学习 API 契约](docs/learning_api_contract.md)
+- [Gradio 收尾与即时纠正校验验收（2026-10-26）](docs/closeout_acceptance_2026-10-26.md)
+- [真实录音核对与 Gradio 入口验收（2026-10-26）](docs/live_transcript_gradio_acceptance_2026-10-26.md)
 - [CI 修复与录音核对验收（2026-10-26）](docs/transcript_confirmation_acceptance_2026-10-26.md)
 - [剩余优化与复习验收（2026-10-26）](docs/remaining_optimizations_acceptance_2026-10-26.md)
 - [SQLite 学习存储契约](docs/learning_store_contract.md)

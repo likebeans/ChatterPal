@@ -14,9 +14,9 @@ class CorrectTab:
         """Initialize correct tab with correction service."""
         self.correction_service = correction_service
 
-    def create_interface(self) -> gr.Tab:
+    def create_interface(self, label: str = "Correct") -> gr.Tab:
         """Create the correction tab interface."""
-        with gr.Tab("Correct") as tab:
+        with gr.Tab(label) as tab:
             gr.Markdown(
                 """
                 # 发音练习分析
@@ -44,7 +44,7 @@ class CorrectTab:
                     )
 
                     audio_input = gr.Audio(
-                        sources=["microphone"], type="numpy",
+                        sources=["microphone", "upload"], type="numpy",
                         label="🎤 录制您的发音（请清晰地朗读内容）",
                     )
 
@@ -62,7 +62,7 @@ class CorrectTab:
                     overall_feedback = gr.Textbox(
                         label="📋 综合评价与指导建议",
                         lines=8,
-                        info="服务返回的未校准参考评分和反馈",
+                        info="识别文本与可用分析的来源、证据和反馈，未测量维度标为不可评估",
                     )
 
                 with gr.Column(scale=1):

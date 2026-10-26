@@ -11,7 +11,6 @@ from unittest.mock import Mock
 import httpx
 import pytest
 from gradio_client import Client
-from gradio_client.utils import Status
 
 from chatterpal.config.settings import Settings
 from chatterpal.core.llm.base import LLMError
@@ -284,8 +283,21 @@ def test_clear_queued_during_slow_send_removes_completed_session(gradio_app):
     try:
         assert started.wait(3)
         clear = client.submit(api_name="/clear_chat")
+        chat_fn = next(
+            fn
+            for fn in gradio_app.interface.fns.values()
+            if fn.api_name == "chat_response"
+        )
+        queue = gradio_app.interface._queue.event_queue_per_concurrency_id[
+            chat_fn.concurrency_id
+        ]
+        # SSE estimates can be missed; observe the accepted server event directly.
         deadline = time.monotonic() + 5
-        while clear.status().code is not Status.IN_QUEUE:
+        while not any(
+            event.fn.api_name == "clear_chat"
+            and event.session_hash == client.session_hash
+            for event in tuple(queue.queue)
+        ):
             assert time.monotonic() < deadline, "clear did not enter the server queue"
             assert not clear.done()
             release.wait(0.01)

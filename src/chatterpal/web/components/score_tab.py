@@ -13,9 +13,9 @@ class ScoreTab:
         """Initialize score tab with evaluation service."""
         self.evaluation_service = evaluation_service
 
-    def create_interface(self) -> gr.Tab:
+    def create_interface(self, label: str = "Score") -> gr.Tab:
         """Create the score tab interface."""
-        with gr.Tab("Score") as tab:
+        with gr.Tab(label) as tab:
             gr.Markdown(
                 """
                 ## 发音练习反馈
@@ -31,7 +31,7 @@ class ScoreTab:
                 **使用方法：**
                 1. 在文本框中输入要练习的英文句子
                 2. 录制您的发音
-                3. 点击"进行评价"获得详细反馈和评分
+                3. 点击"开始评价"查看识别文本、反馈和分析来源
                 """
             )
 
@@ -42,11 +42,11 @@ class ScoreTab:
                         label="📝 练习文本",
                         placeholder="请输入您想要练习的英文句子...",
                         lines=3,
-                        info="输入标准的英文文本，系统将基于此文本评估您的发音",
+                        info="输入参考文本，与机器识别结果比较；文字一致度不代表发音准确率",
                     )
 
                     audio_input = gr.Audio(
-                        sources=["microphone"], type="numpy",
+                        sources=["microphone", "upload"], type="numpy",
                         label="🎤 录制发音（请清晰地朗读练习文本）",
                     )
 

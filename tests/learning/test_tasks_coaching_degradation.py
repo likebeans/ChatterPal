@@ -40,6 +40,174 @@ def test_invalid_advice_container_preserves_a_valid_reply(mode, suggestions):
 
 
 @pytest.mark.parametrize("mode", ["immediate", "after_session"])
+@pytest.mark.parametrize("field", ["corrected", "explanation"])
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "你的发音错误，准确率95",
+        "你的流利度不足。",
+        "Your pronunciation is perfect.",
+        "The phoneme /θ/ is incorrect.",
+        "Your fluency is poor.",
+        "Accuracy: 95",
+        "Your ability is 95%.",
+        "Your rating is 8/10.",
+    ],
+)
+def test_unsupported_text_advice_preserves_a_valid_reply(mode, field, claim):
+    suggestion = {
+        "original": "I go hiking.",
+        "corrected": "I went hiking.",
+        "explanation": "Use the past tense for last weekend.",
+        "category": "grammar",
+    }
+    suggestion[field] = claim
+    response = parse_coach_response(
+        start(mode),
+        "I go hiking.",
+        json.dumps(
+            {
+                "reply": "Who did you go with?",
+                "suggestions": [suggestion],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert response.reply == "Who did you go with?"
+    assert response.suggestions == ()
+    assert response.correction_status == (
+        "unavailable" if mode == "immediate" else "deferred"
+    )
+
+
+@pytest.mark.parametrize(
+    "corrected",
+    [
+        "Your accent is terrible.",
+        "My accent improved perfectly after the workshop.",
+        "I attended an accent workshop. Your pronunciation was poor.",
+    ],
+)
+def test_an_accent_topic_cannot_authorize_new_acoustic_judgements(corrected):
+    original = "Last weekend I attended an accent workshop."
+    response = parse_coach_response(
+        start(),
+        original,
+        json.dumps(
+            {
+                "reply": "Who did you go with?",
+                "suggestions": [
+                    {
+                        "original": original,
+                        "corrected": corrected,
+                        "explanation": "Try a different expression.",
+                        "category": "clarity",
+                    }
+                ],
+            }
+        ),
+    )
+    assert response.reply == "Who did you go with?"
+    assert response.suggestions == ()
+    assert response.correction_status == "unavailable"
+
+
+@pytest.mark.parametrize(
+    "original,corrected,explanation",
+    [
+        (
+            "I attended a accent workshop.",
+            "I attended an accent workshop. Your accent is terrible.",
+            "Use an with this noun phrase.",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "I got 95% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "Your accuracy is 10%.",
+            "Try a different expression.",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "Your accuracy is 10% off the expected level.",
+            "Try a different expression.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "Use an before a vowel sound. Your fluency is poor.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "Use an before a vowel sound that you pronounced incorrectly.",
+        ),
+        (
+            "I get 5% off yesterday.",
+            "I got .5% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "I got -10% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I get 100% off yesterday.",
+            "I got 1,100% off yesterday.",
+            "Use the past tense for yesterday.",
+        ),
+        (
+            "I got 5% off yesterday.",
+            "I got .5% off yesterday.",
+            "Keep the discount.",
+        ),
+        (
+            "I got 10% off yesterday.",
+            "I got -10% off yesterday.",
+            "Keep the discount.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "You mispronounce words whenever you use 'an' before a vowel sound.",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "Use an before a vowel sound; yours was too nasal.",
+        ),
+    ],
+)
+def test_ordinary_text_context_does_not_authorize_changed_facts_or_claims(
+    original, corrected, explanation
+):
+    response = parse_coach_response(
+        start(),
+        original,
+        json.dumps(
+            {
+                "reply": "How was it?",
+                "suggestions": [
+                    {
+                        "original": original,
+                        "corrected": corrected,
+                        "explanation": explanation,
+                        "category": "grammar",
+                    }
+                ],
+            }
+        ),
+    )
+    assert response.reply == "How was it?"
+    assert response.suggestions == ()
+    assert response.correction_status == "unavailable"
+
+
+@pytest.mark.parametrize("mode", ["immediate", "after_session"])
 def test_missing_optional_advice_preserves_a_valid_reply(mode):
     response = parse_coach_response(
         start(mode),

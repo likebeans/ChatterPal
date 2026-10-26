@@ -113,6 +113,98 @@ def test_immediate_mode_returns_one_advice_with_an_exact_current_text_quote():
 
 
 @pytest.mark.parametrize(
+    ("original", "corrected", "explanation", "category"),
+    [
+        (
+            "I go hiking yesterday.",
+            "I went hiking yesterday.",
+            "Use the past tense for yesterday.",
+            "grammar",
+        ),
+        (
+            "I did a reservation.",
+            "I made a reservation.",
+            "Use make a reservation for this activity.",
+            "vocabulary",
+        ),
+        (
+            "I bought 2 ticket for 100 dollars.",
+            "I bought 2 tickets for 100 dollars.",
+            "Use the plural tickets after 2; keep the quantity and price.",
+            "grammar",
+        ),
+        (
+            "Yesterday I got 10% off.",
+            "I got 10% off yesterday.",
+            "The time phrase can go at the end without changing the discount.",
+            "clarity",
+        ),
+        (
+            "Last weekend I attended an accent workshop.",
+            "I attended an accent workshop last weekend.",
+            "The time phrase can go at the end, preserving the activity.",
+            "clarity",
+        ),
+        (
+            "I get 10% off yesterday.",
+            "I got 10% off yesterday.",
+            "Use the past tense for yesterday.",
+            "grammar",
+        ),
+        (
+            "I attended a accent workshop.",
+            "I attended an accent workshop.",
+            "Use an with this noun phrase.",
+            "grammar",
+        ),
+        (
+            "I ate a apple.",
+            "I ate an apple.",
+            "Use an before a vowel sound.",
+            "grammar",
+        ),
+        (
+            "I get .5% off yesterday.",
+            "I got .5% off yesterday.",
+            "Use the past tense for yesterday.",
+            "grammar",
+        ),
+        (
+            "I get 1,100% discount yesterday.",
+            "I got 1,100% discount yesterday.",
+            "Use the past tense without changing the quoted amount.",
+            "grammar",
+        ),
+    ],
+)
+def test_immediate_text_advice_preserves_grammar_vocabulary_quantities_and_topics(
+    original, corrected, explanation, category
+):
+    result = parse_coach_response(
+        session("immediate"),
+        original,
+        json.dumps(
+            {
+                "reply": "How was it?",
+                "suggestions": [
+                    {
+                        "original": original,
+                        "corrected": corrected,
+                        "explanation": explanation,
+                        "category": category,
+                    }
+                ],
+            }
+        ),
+    )
+    assert result.correction_status == "available"
+    assert result.reply == "How was it?"
+    assert len(result.suggestions) == 1
+    assert result.suggestions[0].corrected == corrected
+    assert result.suggestions[0].explanation == explanation
+
+
+@pytest.mark.parametrize(
     "bad_suggestion",
     [
         {

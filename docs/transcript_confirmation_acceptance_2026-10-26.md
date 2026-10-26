@@ -1,5 +1,7 @@
 # CI 修复与录音转写核对验收
 
+> 交付状态更新（2026-10-26）：下文是实现当时的本地验收记录。录音核对及 CI 修复现已进入 `main@73ab2d8`；该 SHA 的 [GitHub Actions 40264524073](https://github.com/likebeans/ChatterPal/actions/runs/40264524073) 后端 1978 项、前端 186 项及 build/lint 均通过。下文“尚未提交/推送”与“未产生新远端绿色运行”只描述记录时点。后续 Gradio 收尾和即时纠正校验见 [收尾验收](closeout_acceptance_2026-10-26.md)；真实提供商历史记录仍按原范围解释。
+
 日期：2026-10-26。工作树：`ChatterPal-transcript-confirmation`，分支：`feat/transcript-confirmation`，起点：main `d98b13b19f3ef09b1393ce8f4358e4a9c256d466`。本文记录当前未提交工作树的本地验收；尚未提交、推送、合并或部署，也未重新运行远端 GitHub Actions。
 
 ## 交付行为
