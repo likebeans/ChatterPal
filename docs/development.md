@@ -4,7 +4,7 @@
 
 ### 系统要求
 
-- Python 3.8+
+- Python >=3.12
 - Git
 - 网络连接（用于下载依赖和API调用）
 
@@ -20,8 +20,8 @@
 
 #### 1. 克隆项目
 ```bash
-git clone https://github.com/your-org/chatterpal.git
-cd chatterpal
+git clone https://github.com/likebeans/ChatterPal.git
+cd ChatterPal
 ```
 
 #### 2. 安装开发依赖

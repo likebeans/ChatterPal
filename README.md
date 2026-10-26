@@ -59,7 +59,7 @@ Gradio 默认地址为 http://localhost:7860。首次使用本地 Whisper 会下
 
 ## 可选依赖和安装命令
 
-发布 wheel 内包含可独立使用的命令入口；帮助命令不加载模型或 UI。`chatterpal-setup` 默认检查环境，只有明确传入 `--create-config` 才创建配置，并拒绝覆盖现有文件。
+发布 wheel 内包含可独立使用的命令入口；帮助命令不加载模型或 UI。`chatterpal-setup` 默认检查环境，使用 `chatterpal-setup env` 显式创建配置，并拒绝覆盖现有文件。
 
 ```bash
 chatterpal-run --help

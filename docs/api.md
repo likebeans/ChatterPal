@@ -2,7 +2,9 @@
 
 ## 概述
 
-ChatterPal 提供了一个全面的英语发音训练和评估 API。系统采用模块化架构，支持多种 ASR 引擎、TTS 服务和 LLM 提供商。该文档涵盖了增强的聊天模块功能，包括多模态输入输出、主题生成、音频处理优化等新特性。
+ChatterPal 提供英语口语练习、文本反馈和可选录音声学摘要 API，支持多种 ASR 引擎、TTS 服务和 LLM 提供商。
+
+本文保留了部分早期模块示例，不应将其视为当前 HTTP 契约。任务学习接口以[学习 API 契约](learning_api_contract.md)为准；当前分析响应与评分限制见下方[评估结果与评分边界](#评估结果与评分边界)，完整 HTTP 结构可在运行后的 `http://localhost:8010/docs` 查看。
 
 ## Core Modules
 
@@ -323,8 +325,9 @@ stats = topic_generator.get_statistics()
 ```python
 from chatterpal.services.evaluation import EvaluationService
 
-eval_service = EvaluationService()
-scores = eval_service.evaluate_pronunciation("audio.wav", "reference text")
+eval_service = EvaluationService(asr=asr_instance)  # 已初始化的 ASR
+result = eval_service.evaluate_pronunciation("audio.wav", "reference text")
+analysis = result.to_dict()  # 文本对齐与来源说明；未校准的能力分数为 None
 ```
 
 ### 纠错服务 (CorrectionService)
@@ -332,8 +335,9 @@ scores = eval_service.evaluate_pronunciation("audio.wav", "reference text")
 ```python
 from chatterpal.services.correction import CorrectionService
 
-correction_service = CorrectionService()
-corrections = correction_service.analyze_pronunciation("audio.wav", "reference text")
+correction_service = CorrectionService(asr=asr_instance)
+report = correction_service.comprehensive_correction("audio.wav", "reference text")
+analysis = report.to_dict()
 ```
 
 ## 配置管理
@@ -698,41 +702,32 @@ sample_rate, audio_data = audio_output
 }
 ```
 
-### 评估结果格式
+### 评估结果与评分边界
+
+当前分析提供 ASR 转写、与参考文本的有序词编辑对齐、文本练习建议，以及可选工具取得的整段录音声学摘要。文本差异可能来自识别错误；ASR 置信度、文本一致度、基频或共振峰统计均不能替代发音准确率或语言能力判断。当前未执行声学音素对齐，没有经过人工标注数据校准的总分、发音分、流畅度分或韵律分，也不据此推断能力等级、学习进步或排名。
+
+`EvaluationService.evaluate_pronunciation(...).to_dict()` 的评分字段如下（节选，未提供参考文本时）：
 
 ```json
 {
-    "overall_score": 85.5,
-    "fluency": 80.0,
-    "pronunciation": 90.0,
-    "prosody": 85.0,
-    "content_accuracy": 88.0,
-    "detailed_analysis": {
-        "word_scores": [...],
-        "phoneme_errors": [...],
-        "suggestions": [...]
-    }
+    "overall_score": null,
+    "detailed_scores": {
+        "fluency": null,
+        "pronunciation": null,
+        "prosody": null,
+        "accuracy": null
+    },
+    "calibrated": false
 }
 ```
 
-### 纠错结果格式
+提供有效参考文本和识别文本后，`detailed_scores.accuracy` 可为文本一致度百分比；它不是声学发音准确率。`dimensions` 中的 `score`、`status`、`source`、`reason`、`evidence`、`unit` 和 `calibrated` 说明每个维度的来源与限制。Python 分析结果另有 `feature_metadata` 描述实测声学特征。不可用分数为 `null`，并附原因，不能按零分或默认分数处理。
 
-```json
-{
-    "transcript": "recognized text",
-    "reference": "expected text",
-    "corrections": [
-        {
-            "word": "example",
-            "error_type": "pronunciation",
-            "suggestion": "Focus on the /æ/ sound",
-            "ipa_actual": "/ɪgˈzæmpəl/",
-            "ipa_expected": "/ɪgˈzæmpəl/"
-        }
-    ],
-    "overall_feedback": "Good pronunciation overall..."
-}
-```
+### 纠错 HTTP 响应
+
+`POST /api/pronunciation/analyze` 接收 multipart 表单字段 `audio` 和 `reference_text`，返回 `overall_score`、`recognized_text`、`corrections`、`suggestions`、`dimensions`、`calibrated` 和 `scope`；当前 `overall_score` 为 `null`，`calibrated` 为 `false`。`corrections` 项使用 `type`、`original`、`corrected` 和 `explanation`，描述识别文本差异或带限制说明的韵律提示，不构成具体音素错误诊断。
+
+旧例中的 `content_accuracy`、`word_scores`、`phoneme_errors`、`ipa_actual` 和 `ipa_expected` 不是该 HTTP 接口当前返回的字段。Python 的 `phoneme_analysis` 也只包含整段录音摘要或不可用说明，不代表已识别出音素错误。AI 分析中的文本建议和可选发音练习同样不能当作听过原音后的声学结论；完整字段以运行后的 OpenAPI 为准。
 
 ## 使用示例
 

@@ -132,8 +132,8 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
     onDiscard: async () => {
       const draft = drafts.read(key)
       const draftVersion = flow.pending?.action === 'transcribe' && flow.pending.draft_key === key ? flow.pending.draft_version ?? draft.version : draft.version
-      await flow.cancelTranscription({ draft_key: key, draft_version: draftVersion }, draft.transcription?.transcription_id)
-      drafts.discard(key, draftVersion)
+      const consumed = await flow.cancelTranscription({ draft_key: key, draft_version: draftVersion }, draft.transcription?.transcription_id)
+      drafts.discard(key, draftVersion, consumed)
     },
   })
   const submitAttempt = (submission: LearningSubmission) => {

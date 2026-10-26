@@ -383,29 +383,38 @@ export function useLearningFlow(api: LearningApi = learningApi) {
     }
     const saved = transcriptionReceipts.current.find(item => item.draft_key === receipt.draft_key && item.draft_version === receipt.draft_version)
     const id = transcriptionId || saved?.transcription_id
-    if (!waiting && !id) { forgetTranscription(receipt); return }
+    if (!waiting && !id) { forgetTranscription(receipt); return false }
     const version = generation.current
     const request = waiting?.request_id || saved?.request_id || id!
     if (cancellingTranscription.current) throw new LearningApiError('正在放弃录音，请稍候。', 'operation_pending')
     cancellingTranscription.current = request
     const wasPaused = paused.current
     pausePolling(true)
+    let consumed = false
     try {
       try {
         if (waiting) await api.deleteTranscriptionRequest(waiting.request_id)
         else await api.deleteTranscription(id!)
       } catch (failure) {
-        if (!waiting || !(failure instanceof LearningApiError) || failure.status !== 404) throw failure
-        // Keep the receipt until the original POST is visible and a DELETE succeeds.
-        const existing = await api.requestStatus(waiting.request_id)
-        if (!current(version)) throw new LearningApiError('学习身份已更新，请重新打开练习。', 'identity_changed')
-        if (existing.request_id !== waiting.request_id) throw new LearningApiError('无法核对原识别请求，请稍后重试放弃录音。', 'invalid_response')
-        await api.deleteTranscriptionRequest(waiting.request_id)
+        if (!waiting && failure instanceof LearningApiError && failure.code === 'transcription_consumed') {
+          const transcription = await api.getTranscription(id!)
+          if (transcription.status !== 'consumed') throw failure
+          consumed = true
+        } else {
+          if (!waiting || !(failure instanceof LearningApiError) || failure.status !== 404) throw failure
+          // Keep the receipt until the original POST is visible and a DELETE succeeds.
+          const existing = await api.requestStatus(waiting.request_id)
+          if (!current(version)) throw new LearningApiError('学习身份已更新，请重新打开练习。', 'identity_changed')
+          if (existing.request_id !== waiting.request_id) throw new LearningApiError('无法核对原识别请求，请稍后重试放弃录音。', 'invalid_response')
+          await api.deleteTranscriptionRequest(waiting.request_id)
+        }
       }
       if (!current(version)) throw new LearningApiError('学习身份已更新，请重新打开练习。', 'identity_changed')
       if (waiting && pendingRef.current?.request_id === waiting.request_id) { updatePending(null); retry.current = null; setError(''); setRecovery(null) }
       forgetTranscription(receipt)
-      setNotice('已放弃本次录音。')
+      if (!recoveryRef.current) setError('')
+      setNotice(consumed ? '这段录音已保存为回答，请刷新记录核对结果。本页已解除录音关联，未发送的文字已保留。' : '已放弃本次录音。')
+      return consumed
     } catch (failure) {
       if (current(version)) setError(`无法放弃本次录音：${message(failure)} 录音与恢复编号已保留。`)
       throw failure

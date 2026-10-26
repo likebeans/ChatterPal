@@ -104,9 +104,9 @@ chatterpal-setup = "chatterpal.cli.setup:main"
 chatterpal-run = "chatterpal.cli.run:main"
 
 [project.urls]
-Homepage = "https://github.com/chatterpal/chatterpal"
-Repository = "https://github.com/chatterpal/chatterpal"
-Issues = "https://github.com/chatterpal/chatterpal/issues"
+Homepage = "https://github.com/likebeans/ChatterPal"
+Repository = "https://github.com/likebeans/ChatterPal"
+Issues = "https://github.com/likebeans/ChatterPal/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/chatterpal"]

@@ -5,6 +5,7 @@
 ## 当前入口与验收
 
 - [当前功能与运行边界](../README.md) — React + FastAPI 的“今日练习”为任务学习主入口；Gradio 为独立聊天与分析入口。
+- [2026-10-26 开源前最终验收](final_acceptance_2026-10-26.md) — 三项任务、六道迁移题、录音恢复修复与最终检查结果。
 - [局域网试用环境](trial_environment.md) — 固定版本、手机 HTTPS 证书、持久数据、启停与备份。
 - [2026-10-26 试用环境验收](trial_environment_acceptance_2026-10-26.md) — 实际局域网入口、证书指纹、真实提供商浏览器验收与停启/备份结果。
 - [2026-10-26 收尾验收](closeout_acceptance_2026-10-26.md) — 当前补丁范围、即时纠正校验、实际页面复验与可追溯结果。
@@ -72,6 +73,6 @@
 如果在使用过程中遇到问题：
 
 1. 首先查看相关文档
-2. 搜索 [GitHub Issues](https://github.com/your-org/chatterpal/issues)
+2. 搜索 [GitHub Issues](https://github.com/likebeans/ChatterPal/issues)
 3. 查看相关文档
-4. 参与 [讨论区](https://github.com/your-org/chatterpal/discussions) 交流
+4. 参与 [讨论区](https://github.com/likebeans/ChatterPal/discussions) 交流

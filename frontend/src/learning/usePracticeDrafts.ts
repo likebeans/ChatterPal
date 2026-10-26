@@ -53,14 +53,15 @@ export function usePracticeDrafts(owner: string | undefined, confirmation: Learn
       return { owner, drafts }
     })
   }, [owner])
-  const discard = useCallback((key: string, expectedVersion: number) => {
+  const discard = useCallback((key: string, expectedVersion: number, preserveConfirmation = false) => {
     if (!owner || currentOwner.current !== owner) return
     const nextVersion = ++version.current
     setState(previous => {
       const draft = previous.drafts.get(key)
       if (previous.owner !== owner || draft && draft.version !== expectedVersion) return previous
       const drafts = new Map(previous.drafts)
-      drafts.set(key, { ...(draft || EMPTY_DRAFT), audio: null, transcription: null, confirmationText: '', context: null, version: nextVersion })
+      drafts.set(key, { ...(draft || EMPTY_DRAFT), text: draft?.text || (preserveConfirmation ? draft?.confirmationText || '' : ''),
+        audio: null, transcription: null, confirmationText: '', context: null, version: nextVersion })
       return { ...previous, drafts }
     })
   }, [owner])

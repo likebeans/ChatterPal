@@ -236,6 +236,13 @@ const digest = value => createHash('sha256').update(value).digest('hex');
     await page.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor();
     assert.equal((await counts()).asr, 1, 'Ready draft recovery must not recognize again');
     await play('试听本次录音');
+    const staleTab = await context.newPage();
+    staleTab.setDefaultTimeout(20000);
+    staleTab.on('pageerror', error => errors.push(error.message));
+    await staleTab.goto(uiUrl);
+    await staleTab.getByRole('button', { name: '继续核对任务录音', exact: true }).click();
+    const localCorrection = 'This local correction must survive another tab confirming the recording.';
+    await staleTab.getByRole('textbox', { name: '核对录音文字', exact: true }).fill(localCorrection);
     const firstText = 'Last Saturday I go hiking with my friends.';
     const firstSaved = await confirm(firstText, '/turns');
     const spoken = firstSaved.operation.result.turns.find(turn => turn.role === 'user');
@@ -252,7 +259,35 @@ const digest = value => createHash('sha256').update(value).digest('hex');
     const reuse = await context.request.post(`${uiUrl}/api/learning/sessions/${sessionId}/turns`, { data: { ...firstSaved.request.postDataJSON(), request_id: 'browser-reuse-consumed', expected_revision: firstSaved.operation.result.revision } });
     assert.equal(reuse.status(), 409);
     assert.equal((await counts()).asr, 1);
-    for (const text of ['I was with my friends.', 'It was relaxing because we had time to talk.']) {
+    const consumedResponse = staleTab.waitForResponse(response => response.request().method() === 'DELETE'
+      && new URL(response.url()).pathname.endsWith(`/transcriptions/${first.transcription_id}`));
+    await staleTab.getByRole('button', { name: '放弃本次录音', exact: true }).click();
+    assert.equal((await consumedResponse).status(), 409, 'The saved recording must remain protected');
+    await staleTab.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor({ state: 'detached' });
+    assert.equal(await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).inputValue(), localCorrection);
+    assert.equal(await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).isEnabled(), true);
+    await staleTab.getByRole('button', { name: '刷新本次记录', exact: true }).click();
+    await staleTab.getByText(firstText, { exact: true }).first().waitFor();
+    await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).fill('A separate text draft before rerecording.');
+    await staleTab.getByRole('button', { name: '开始录音', exact: true }).click();
+    await staleTab.getByRole('button', { name: '停止录音', exact: true }).waitFor();
+    await delay(650);
+    await staleTab.getByRole('button', { name: '停止录音', exact: true }).click();
+    await staleTab.getByRole('button', { name: '放弃本次录音', exact: true }).click();
+    await staleTab.getByRole('button', { name: '开始录音', exact: true }).waitFor();
+    await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).fill('I was with my friends.');
+    const recoveredSubmission = staleTab.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname.endsWith(`/sessions/${sessionId}/turns`));
+    await staleTab.getByRole('button', { name: '发送任务回答', exact: true }).click();
+    const recoveredResponse = await recoveredSubmission;
+    assert.equal(recoveredResponse.status(), 202);
+    await settled(await recoveredResponse.json());
+    await staleTab.locator('.learning-pending').waitFor({ state: 'detached' });
+    assert.equal((await counts()).asr, 1, 'Consumed recovery and rerecord discard must not repeat ASR');
+    await staleTab.screenshot({ path: path.join(output, 'consumed-recording-recovered.png'), fullPage: true });
+    await staleTab.close();
+    await reopenSession();
+    for (const text of ['It was relaxing because we had time to talk.']) {
       await page.getByRole('textbox', { name: '我的任务回答', exact: true }).fill(text);
       await submit('发送任务回答', '/turns');
     }
@@ -304,6 +339,7 @@ const digest = value => createHash('sha256').update(value).digest('hex');
       preview_only_asr: true, explicit_edited_confirmation: true, three_input_contexts: true,
       ready_draft_browser_reload: true, ready_draft_api_restart: true, preview_audio_played: true,
       original_audio_asset_reused: true, duplicate_request_recovered: true, consumed_draft_rejected: true,
+      consumed_draft_other_tab_recovered: true, consumed_correction_preserved: true, continued_text_and_recording: true,
       historical_provenance_restored: true, owner_isolation: true, mobile_overflow: false,
       provider_counts: await counts(), errors, requests };
     await fs.writeFile(path.join(output, 'operations.json'), JSON.stringify(operations, null, 2));

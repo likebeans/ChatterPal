@@ -45,6 +45,14 @@ class LLM(FixtureLLM):
             first, last = turns[0], turns[-1]
             suggested = {'weekend': 'I went hiking on Saturday.', 'restaurant-order': \"I'd like one chicken sandwich, please.\", 'hotel-check-in': \"I'd like to check in. I have a reservation.\"}[task['task_id']]
             return json.dumps({'strength': {'source_turn_id': last['source_turn_id'], 'quote': last['text'], 'explanation': '这句提供了当前任务所需的信息。'}, 'focuses': [{'source_turn_id': first['source_turn_id'], 'original': first['text'], 'suggested': suggested, 'explanation': '可以用这个表达说明同一件事。', 'category': 'clarity'}], 'criteria': [{'criterion_id': criterion['criterion_id'], 'result': 'met', 'evidence': turns[min(index, len(turns) - 1)]['text']} for index, criterion in enumerate(task['criteria'])]}, ensure_ascii=False)
+        if instruction.startswith('INT2_EVALUATE_FREE_RESPONSE'):
+            task = json.loads(instruction.splitlines()[-1])['task']
+            expected = {'weekend': {'activity', 'company', 'feeling'}, 'restaurant-order': {'meal', 'drink', 'request'}, 'hotel-check-in': {'check-in', 'reservation', 'question'}}
+            assert {criterion['criterion_id'] for criterion in task['criteria']} == expected[task['task_id']]
+            transcript = json.loads(messages[-1]['content'])['transcript']
+            with (output / 'evaluation-contexts.jsonl').open('a') as stream:
+                stream.write(json.dumps({'task': task, 'transcript': transcript}) + '\\n')
+            return json.dumps({'result': 'met', 'reason': '这次表达提供了当前任务所需的信息。', 'evidence': transcript}, ensure_ascii=False)
         return super().chat(messages)
 asr, llm, tts = ASR(), LLM(), FixtureTTS(buffer.getvalue())
 asr.text = 'I cooked a meal at home by myself last weekend and felt peaceful.'
@@ -55,6 +63,10 @@ settings = Settings(_env_file=None, learning_db_path=str(output / 'learning.sqli
 server = api_server.APIServer(settings)
 def clock():
     return datetime.fromisoformat((output / 'clock.txt').read_text().strip())
+server.app.state.learning_repository().clock = lambda: clock().timestamp()
+from chatterpal.learning.review import public_record
+from chatterpal.web.routes import learning_records
+learning_records.public_record = lambda record: public_record(record, clock=clock)
 server.app.state.learning_service().clock = clock
 server.app.state.learning_review_service().clock = clock
 server.run(host='127.0.0.1', port=port)
@@ -81,7 +93,10 @@ async function stop(child) {
 (async () => {
   const output = process.env.REVIEW_OUTPUT_DIR || await fs.mkdtemp(path.join(os.tmpdir(), 'chatterpal-review-browser-'));
   await fs.mkdir(output, { recursive: true });
-  const setClock = value => fs.writeFile(path.join(output, 'clock.txt'), value);
+  const setClock = async value => {
+    await fs.writeFile(path.join(output, 'clock.next'), value);
+    await fs.rename(path.join(output, 'clock.next'), path.join(output, 'clock.txt'));
+  };
   await setClock('2026-10-25T08:00:00+00:00');
   const handles = [];
   const errors = [];
@@ -132,9 +147,10 @@ async function stop(child) {
       return operation;
     };
     async function submit(button, suffix) {
-      const responsePromise = page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith(suffix));
-      await button.click();
-      const response = await responsePromise;
+      const [response] = await Promise.all([
+        page.waitForResponse(response => response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith(suffix)),
+        button.click(),
+      ]);
       assert.equal(response.status(), 202, `${suffix}: ${await response.text()}`);
       const result = await settled(await response.json());
       await page.locator('.learning-pending').waitFor({ state: 'detached' });
@@ -159,6 +175,9 @@ async function stop(child) {
     await page.goto(uiUrl);
     const start = await submit(page.getByRole('button', { name: '开始描述周末', exact: true }), '/sessions');
     const sessionId = start.session_id;
+    // This fixture checks replay several simulated days later, so explicitly retain its audio.
+    const retention = await context.request.patch(`${uiUrl}/api/learning/profile`, { data: { retain_audio: true } });
+    assert.equal(retention.status(), 200);
     const composer = page.getByRole('textbox', { name: '我的任务回答', exact: true });
     for (const text of ['I go hiking last Saturday.', 'I was with my friends.', 'It was relaxing because we had time to talk.']) {
       await composer.fill(text);
@@ -304,8 +323,14 @@ async function stop(child) {
     await page.screenshot({ path: path.join(output, 'review-history-after-reload.png'), fullPage: true });
     const scenarioResults = [];
     for (const scenario of [
-      { title: '在餐厅点餐', id: 'restaurant-order', turns: ['I want one chicken sandwich, please.', 'No drink for me, thank you.', 'Could I have it without onions?'], retry: 'Could I please order a chicken sandwich without onions and no drink?' },
-      { title: '办理酒店入住', id: 'hotel-check-in', turns: ['I want check in. I have a reservation.', 'The booking is under Alex Morgan for two nights.', 'What time is breakfast served?'], retry: 'I have a booking for two nights under Alex Morgan. Could I check in and ask about breakfast?' },
+      { title: '在餐厅点餐', id: 'restaurant-order', turns: ['I want one chicken sandwich, please.', 'No drink for me, thank you.', 'Could I have it without onions?'], retry: 'Could I please order a chicken sandwich without onions and no drink?', reviews: [
+        { id: 'soup-lunch', answer: 'Could I order one tomato soup and some tea, please? Does the soup contain cream?' },
+        { id: 'pasta-change', answer: 'May I have one vegetable pasta and water, please? Could you leave off the cheese?' },
+      ] },
+      { title: '办理酒店入住', id: 'hotel-check-in', turns: ['I want check in. I have a reservation.', 'The booking is under Alex Morgan for two nights.', 'What time is breakfast served?'], retry: 'I have a booking for two nights under Alex Morgan. Could I check in and ask about breakfast?', reviews: [
+        { id: 'breakfast-question', answer: 'Hello, I am checking in with a reservation for Alex Morgan for two nights. When does breakfast start?' },
+        { id: 'checkout-question', answer: 'I would like to check in, please. My two-night booking is under Alex Morgan. What is the checkout time?' },
+      ] },
     ]) {
       await page.getByRole('button', { name: '今日任务', exact: true }).click();
       const created = await submit(page.getByRole('button', { name: `开始${scenario.title}`, exact: true }), '/sessions');
@@ -324,8 +349,28 @@ async function stop(child) {
       assert.equal(saved.feedback.status, 'available');
       assert.equal(saved.attempts.length, 2);
       assert.equal(saved.attempts[1].parent_attempt_id, saved.attempts[0].attempt_id);
-      scenarioResults.push({ task_id: scenario.id, user_turns: 3, feedback: saved.feedback.status, linked_retry: true });
       await page.screenshot({ path: path.join(output, `${scenario.id}-desktop.png`), fullPage: true });
+      const scheduled = await submit(page.getByRole('button', { name: '保存这个表达到复习', exact: true }), '/reviews');
+      const itemId = scheduled.result.review_item_id;
+      const reviewed = [];
+      let dueAt = scheduled.result.due_at;
+      for (const [index, question] of scenario.reviews.entries()) {
+        await setClock(dueAt);
+        const current = await openReview(itemId);
+        assert.equal(current.question_id, question.id);
+        await page.getByRole('textbox', { name: '我的复习回答', exact: true }).fill(question.answer);
+        const answered = await submit(page.getByRole('button', { name: '提交复习回答', exact: true }), '/attempts');
+        assert.equal(answered.result.attempt.question_id, question.id);
+        assert.equal(answered.result.attempt.prompt, current.prompt);
+        assert.equal(answered.result.attempt.evaluation.result, 'met');
+        assert.equal(answered.result.attempt.schedule_advanced, true);
+        const interval = index === 0 ? 3 : 7;
+        assert.equal(Date.parse(answered.result.next_due_at) - Date.parse(dueAt), interval * 86400000);
+        reviewed.push({ question_id: question.id, prompt: current.prompt, schedule_advanced: true, interval_days: interval });
+        dueAt = answered.result.next_due_at;
+      }
+      await page.screenshot({ path: path.join(output, `${scenario.id}-review.png`), fullPage: true });
+      scenarioResults.push({ task_id: scenario.id, user_turns: 3, feedback: saved.feedback.status, linked_retry: true, reviews: reviewed });
     }
     const stranger = await browser.newContext();
     assert.equal((await stranger.request.post(`${uiUrl}/api/learning/bootstrap`)).status(), 200);

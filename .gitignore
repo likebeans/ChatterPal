@@ -121,12 +121,27 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+*.env
+!.env.example
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Private TLS keys and browser authentication state
+root.key
+*browser[-_]state*.json
+*browser[-_]state*/
+*browserState*.json
+*browserState*/
+*storage[-_]state*.json
+*storage[-_]state*/
+*storageState*.json
+*storageState*/
+.auth/
 
 # Spyder project settings
 .spyderproject
