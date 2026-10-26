@@ -606,12 +606,17 @@ def test_raw_review_keeps_no_inline_target_and_public_projection_is_detached(
 
 @pytest.mark.asyncio
 async def test_review_http_routes_enforce_identity_revision_and_durable_assistance(
-    review_env, audio_bytes
+    review_env, audio_bytes, monkeypatch
 ):
     env = review_env
     item = save(env)
     app = FastAPI()
     settings = SimpleNamespace(learning_max_audio_bytes=2 * 1024 * 1024)
+    # Generic record reads must use the same test clock as review operations.
+    monkeypatch.setattr(
+        "chatterpal.web.routes.learning_records.public_record",
+        lambda record: public_record(record, clock=env.clock),
+    )
     mount_learning_api(app, settings, store=env.store, allow_record_writes=False)
     mount_learning_review(app, settings, service=env.service)
     async with httpx.AsyncClient(

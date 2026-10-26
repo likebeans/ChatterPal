@@ -17,6 +17,9 @@ jobs:
       HF_HUB_DISABLE_TELEMETRY: "1"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Trial contracts archive the pinned application commit.
+          fetch-depth: 0
       - name: Install audio build dependencies
         run: sudo apt-get update && sudo apt-get install -y portaudio19-dev libsndfile1 ffmpeg
       - uses: astral-sh/setup-uv@v6

@@ -83,6 +83,12 @@ class Launchctl:
 
 class TrialEnvironmentTests(unittest.TestCase):
     def setUp(self):
+        # launchctl is simulated; only the launcher sees the supported platform.
+        platform = mock.patch.object(
+            trial, "sys", types.SimpleNamespace(platform="darwin")
+        )
+        platform.start()
+        self.addCleanup(platform.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name).resolve()
@@ -580,6 +586,19 @@ class TrialEnvironmentTests(unittest.TestCase):
             with self.assertRaisesRegex(trial.TrialError, "18300.*unavailable"):
                 self.environment.start()
         self.assertFalse(any(call[0] == "bootstrap" for call in self.launchctl.calls))
+
+
+class PlatformGuardTests(unittest.TestCase):
+    def test_real_operations_still_reject_unsupported_platforms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = trial.TrialEnvironment(Path(directory) / "state")
+            with mock.patch.object(
+                trial, "sys", types.SimpleNamespace(platform="linux")
+            ):
+                with self.assertRaisesRegex(trial.TrialError, "require macOS"):
+                    with environment._lock():
+                        self.fail("An unsupported platform entered a trial operation")
+            self.assertFalse(environment.root.exists())
 
 
 class ApiChildLauncherTests(unittest.TestCase):
