@@ -5,6 +5,8 @@
 ## 当前入口与验收
 
 - [当前功能与运行边界](../README.md) — React + FastAPI 的“今日练习”为任务学习主入口；Gradio 为独立聊天与分析入口。
+- [局域网试用环境](trial_environment.md) — 固定版本、手机 HTTPS 证书、持久数据、启停与备份。
+- [2026-10-26 试用环境验收](trial_environment_acceptance_2026-10-26.md) — 实际局域网入口、证书指纹、真实提供商浏览器验收与停启/备份结果。
 - [2026-10-26 收尾验收](closeout_acceptance_2026-10-26.md) — 当前补丁范围、即时纠正校验、实际页面复验与可追溯结果。
 - [录音核对与 Gradio 验收记录](live_transcript_gradio_acceptance_2026-10-26.md) — 早前真实提供商运行、合成语音与设备边界。
 - [学习 API 契约](learning_api_contract.md) — 已接通的身份、任务、反馈、重练、复习和操作语义。

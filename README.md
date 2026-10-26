@@ -109,6 +109,8 @@ docker compose ps
 
 默认启动后端 API（8010）与静态 React 前端（3010）。生产环境需自行完成 HTTPS、访问控制、持久卷和容量配置。云端精简构建、可选 Gradio 与具体已验证平台见[部署指南](docs/deployment.md#docker-compose-部署)。
 
+在同一局域网内进行两天手机试用，可使用[macOS 试用环境](docs/trial_environment.md)：固定应用版本、Caddy HTTPS、独立 SQLite、用户级进程管理与在线备份。实际启动及浏览器验收见[2026-10-26 试用环境验收](docs/trial_environment_acceptance_2026-10-26.md)。
+
 ## 开发与验证
 
 打包测试使用明确准备的 wheelhouse，测试阶段禁用网络和索引，并为安装创建新缓存。首次或依赖锁变化后先执行以下准备命令（此阶段联网）：
