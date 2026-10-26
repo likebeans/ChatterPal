@@ -128,12 +128,7 @@ class TestProsodyFeatures:
         """Test ProsodyFeatures initialization with defaults."""
         features = ProsodyFeatures()
         
-        assert features.speaking_rate == 120.0
-        assert features.articulation_rate == 150.0
-        assert features.f0_mean == 150.0
-        assert features.f0_std == 25.0
-        assert features.pause_duration == 0.5
-        assert features.fluency_score == 0.7
+        assert all(value is None for value in vars(features).values())
     
     def test_initialization_custom(self):
         """Test ProsodyFeatures initialization with custom values."""
@@ -342,7 +337,8 @@ class TestAssessmentBase:
         
         result = assessment.create_default_result("Test error")
         assert isinstance(result, AssessmentResult)
-        assert result.overall_score == 0.0
+        assert result.overall_score is None
+        assert all(item['status'] == 'unavailable' and item['score'] is None for item in result.dimensions.values())
         assert result.feedback == "Test error"
         assert len(result.suggestions) > 0
     
@@ -395,8 +391,13 @@ class TestProsodyAnalyzer:
         for function in vars(prosody_sdk).values():
             function.side_effect = RuntimeError("Analysis failed")
         analyzer = ProsodyAnalyzer()
-        with pytest.raises(AssessmentError):
-            analyzer.assess(assessment_audio.audio_bytes)
+        result = analyzer.assess(assessment_audio.audio_bytes)
+        assert result['analysis_status'] == 'partial'
+        assert result['prosody_features'].f0_mean == pytest.approx(180.0, abs=2.0)
+        assert result['prosody_features'].speaking_rate is None
+        assert result['feature_metadata']['speaking_rate']['status'] == 'unavailable'
+        assert result['feature_metadata']['f0_mean']['status'] == 'measured'
+        assert 'Analysis failed' in result['error']
 
     @pytest.mark.parametrize("analyzer_type", [ProsodyAnalyzer, PhonemeAnalyzer])
     def test_assess_with_file_path(self, assessment_audio, prosody_sdk, analyzer_type):
@@ -435,7 +436,8 @@ class TestPhonemeAnalyzer:
         assert analysis["duration"] == pytest.approx(1.0)
         assert analysis["sample_rate"] == 16000
         assert analysis["pitch"]["mean"] == pytest.approx(180.0, abs=2.0)
-        assert 0 <= analysis["quality_score"] <= 100
+        assert analysis["quality_score"] is None
+        assert analysis["dimensions"]["quality"]["status"] == "unavailable"
         assert {"formants", "intensity", "spectral"} <= analysis.keys()
 
     def test_assess_with_gradio_tuple(self, assessment_audio):
@@ -465,7 +467,9 @@ class TestPronunciationCorrector:
         # its public API so its currently unimplemented integration stays visible.
         result = corrector.assess(assessment_audio.path, "hello world")
         assert isinstance(result, AssessmentResult)
-        assert result.overall_score > 0
+        assert result.overall_score is None
+        assert result.dimensions["overall"]["status"] == "unavailable"
+        assert result.feature_metadata["f0_mean"]["source"] == "parselmouth"
         assert result.target_text == "hello world"
         assert result.audio_duration == pytest.approx(1.0)
         assert len(result.phoneme_analysis) > 0, "Comprehensive assessment returned no phoneme analysis"
@@ -504,8 +508,9 @@ class TestPronunciationCorrector:
         suggestions = corrector._generate_improvement_suggestions(result)
         assert isinstance(suggestions, list)
         assert len(suggestions) > 0
-        # Slow speech must receive a speed-specific improvement suggestion.
-        assert any("速度" in suggestion or "语速" in suggestion for suggestion in suggestions)
+        # A raw rate without units/provenance cannot support a speed diagnosis.
+        assert any("识别错误" in suggestion for suggestion in suggestions)
+        assert all("过慢" not in suggestion for suggestion in suggestions)
 
 if __name__ == "__main__":
     pytest.main([__file__])

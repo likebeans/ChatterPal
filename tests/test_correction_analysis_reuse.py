@@ -37,7 +37,8 @@ def test_each_correction_measures_acoustics_once(voice, level, monkeypatch):
     assert len(measured) == 1
     assert measured[0]['analysis_success'] is True
     assert measured[0]['pitch']['mean'] == pytest.approx(180, abs=2)
-    assert report.overall_score == 75
+    assert report.overall_score is None
+    assert report.dimensions['overall']['status'] == 'unavailable'
     if level != 'basic':
         assert service.corrector.assess.call_args.kwargs['phoneme_analysis'] is measured[0]
     assert '未校准' in report.detailed_feedback
@@ -58,4 +59,5 @@ def test_failed_detailed_measurement_is_not_retried_by_base_summary(voice, monke
     assert supplied == {'analysis_success': False, 'error': 'controlled acoustic failure'}
     assert report.phoneme_problems == []
     assert '不可用' in report.detailed_feedback
-    assert report.overall_score == 75
+    assert report.overall_score is None
+    assert report.dimensions['overall']['status'] == 'unavailable'

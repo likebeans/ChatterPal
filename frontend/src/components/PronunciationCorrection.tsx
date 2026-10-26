@@ -6,7 +6,7 @@ import { useLatestRequest } from '../hooks/useLatestRequest'
 import { useObjectUrls } from '../hooks/useObjectUrls'
 import { requestError } from '../api/errors'
 import { isAIResult, isBasicResult } from '../api/pronunciation'
-import type { AIResult, BasicResult, Correction, Scenario, ScenarioContext } from '../api/pronunciation'
+import type { AIResult, AssessmentMetadata, BasicResult, Correction, Scenario, ScenarioContext } from '../api/pronunciation'
 
 function CorrectionList({ items }: { items: Correction[] }) {
   return <div className="corrections-list">{items.map((correction, index) => (
@@ -22,6 +22,21 @@ function CorrectionList({ items }: { items: Correction[] }) {
 
 function Transcript({ text }: { text: string }) {
   return <div className="text-section"><h4>识别文本</h4><p className="original-text">{text.trim() || '识别文本暂不可用，请重新录音后重试。'}</p></div>
+}
+
+function AssessmentAvailability({ report }: { report: AssessmentMetadata }) {
+  const labels: Record<string, string> = { overall: '综合发音评分', pronunciation: '音素准确率', fluency: '流畅度', prosody: '韵律', accuracy: '识别文本一致度', quality: '录音质量', audio_quality: '录音质量', grammar: '语法建议', ai_grammar: 'AI语法建议', ai_feedback: 'AI练习指导', confidence: '分析置信度', difficulty: '语言能力等级' }
+  const sources: Record<string, string> = { text_sequence_alignment: '识别文本序列对齐', llm: '语言模型建议', configured_llm: '已配置的语言模型', gemini: '语言模型建议', prosody_features: '录音韵律测量', parselmouth: '录音声学测量', myprosody: '录音韵律测量' }
+  const statuses = { measured: '已观测', estimated: '参考建议', unavailable: '暂不可评估' }
+  return <div className="assessment-availability">
+    <h4>评估范围与依据</h4>
+    <p className="score-notice">当前评分尚未校准。声学统计和识别文本对比仅用于练习，不能据此判断音素准确率、语言能力或进步。</p>
+    <p>{report.scope || '服务未提供测量依据，综合评分、置信度和能力等级暂不可评估。请结合识别文本和参考录音练习。'}</p>
+    {report.dimensions && <dl>{Object.entries(report.dimensions).map(([name, dimension]) => <div key={name}>
+      <dt>{labels[name] || name}：{statuses[dimension.status]}{name === 'accuracy' && dimension.status === 'measured' && dimension.source === 'text_sequence_alignment' && dimension.score !== null ? ` · 文本序列匹配 ${dimension.score.toFixed(1)}%` : ''}</dt>
+      <dd>{dimension.reason}{dimension.source !== 'none' && <small>（来源：{sources[dimension.source] || dimension.source}）</small>}</dd>
+    </div>)}</dl>}
+  </div>
 }
 
 function PronunciationCorrection({ active = true }: { active?: boolean }) {
@@ -211,7 +226,7 @@ function PronunciationCorrection({ active = true }: { active?: boolean }) {
       </div>
       {result && (
         <div className="analysis-results">
-          <div className="score-section"><h3>总体评分</h3><div className="score-circle"><span>{result.overall_score}</span></div><p className="score-notice">当前评分尚未校准，仅供练习参考。</p></div>
+          <AssessmentAvailability report={result} />
           <div className="text-comparison"><Transcript text={result.recognized_text} /></div>
           {result.corrections.length > 0 && <div className="corrections-section"><h4>详细建议</h4><CorrectionList items={result.corrections} /></div>}
           {result.suggestions.length > 0 && <div className="personalized-tips-section"><h4>练习建议</h4><ul className="tips-list">{result.suggestions.map((tip, index) => <li key={index} className="tip-item">{tip}</li>)}</ul></div>}
@@ -221,16 +236,12 @@ function PronunciationCorrection({ active = true }: { active?: boolean }) {
         <div className="ai-analysis-results">
           <div className="ai-score-section">
             <h3>分析结果（AI模式）</h3>
-            <p className="score-notice">当前评分尚未校准，仅供练习参考。AI 不可用时服务可能回退基础分析，请以详细分析说明为准。</p>
-            <div className="score-grid">
-              <div className="score-circle"><span>{aiResult.overall_score}</span><small>总体评分</small></div>
-              <div className="confidence-score"><span className="confidence-value">{aiResult.confidence_score}</span><small>服务置信度（未校准）</small></div>
-              <div className="difficulty-level"><span className="difficulty-value">{aiResult.difficulty_level || '暂不可用'}</span><small>难度等级</small></div>
-            </div>
+            <AssessmentAvailability report={aiResult} />
+            <p>AI 不可用时保留基础分析，请以详细分析说明为准。</p>
           </div>
           <div className="ai-text-comparison"><Transcript text={aiResult.recognized_text} /></div>
           {aiResult.grammar_corrections.length > 0 && <div className="grammar-corrections-section"><h4>语法纠正</h4><CorrectionList items={aiResult.grammar_corrections} /></div>}
-          {aiResult.pronunciation_feedback.length > 0 && <div className="pronunciation-feedback-section"><h4>发音指导</h4><CorrectionList items={aiResult.pronunciation_feedback} /></div>}
+          {aiResult.pronunciation_feedback.length > 0 && <div className="pronunciation-feedback-section"><h4>发音练习建议</h4><p>语言模型未听到原音，以下是可选练习，不能确认具体发音错误。</p><CorrectionList items={aiResult.pronunciation_feedback} /></div>}
           {aiResult.personalized_tips.length > 0 && <div className="personalized-tips-section"><h4>个性化建议</h4><ul className="tips-list">{aiResult.personalized_tips.map((tip, index) => <li key={index} className="tip-item">{tip}</li>)}</ul></div>}
           {aiResult.scenario_suggestions.length > 0 && <div className="scenario-suggestions-section"><h4>场景建议</h4><div className="scenario-suggestions">{aiResult.scenario_suggestions.map((suggestion, index) => <div key={index} className="scenario-suggestion"><div className="scenario-info"><span className="scenario-name">{suggestion.scenario_type} - {suggestion.difficulty_level}</span><p className="scenario-reason">{suggestion.reason}</p></div></div>)}</div></div>}
           {aiResult.next_scenario && <div className="next-scenario-section"><h4>推荐下一个练习</h4><div className="next-scenario"><span className="next-scenario-name">{aiResult.next_scenario}</span><button type="button" className="apply-scenario-button" onClick={() => changeScenario(aiResult.next_scenario!)} disabled={!scenarios.some(scenario => `${scenario.scenario_type}-${scenario.difficulty_level}` === aiResult.next_scenario)}>应用此场景</button></div></div>}

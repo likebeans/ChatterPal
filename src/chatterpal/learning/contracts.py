@@ -115,3 +115,29 @@ class AttemptRequest(Contract):
 
 class OperationRequest(Contract):
     request_id: RequestId
+
+
+class SaveReviewRequest(Contract):
+    request_id: RequestId
+    session_id: Identifier
+    source_revision: StrictInt = Field(ge=1)
+    source_turn_id: Identifier
+    focus_id: Identifier | None = None
+    attempt_id: Identifier | None = None
+
+
+class ReviewWrite(Contract):
+    request_id: RequestId
+    expected_revision: StrictInt = Field(ge=1)
+
+
+class ReviewHintRequest(ReviewWrite):
+    kind: Literal["sentence_starter", "simpler_question"] = "sentence_starter"
+
+
+class ReviewAttemptRequest(ReviewWrite):
+    text: Text | None = None
+
+
+class ReviewDeferRequest(ReviewWrite):
+    days: StrictInt = Field(default=1, ge=1, le=30)

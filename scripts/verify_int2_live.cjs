@@ -25,7 +25,7 @@ sys.path.insert(0, str(root / 'src'))
 os.environ['GRADIO_ANALYTICS_ENABLED']='False'
 os.environ['HF_HUB_DISABLE_TELEMETRY']='1'
 from chatterpal.config.settings import Settings
-settings=Settings(_env_file=root / '.env', learning_db_path=str(output / 'learning.sqlite3'),
+settings=Settings(_env_file=os.environ.get('INT2_ENV_FILE', str(root / '.env')), learning_db_path=str(output / 'learning.sqlite3'),
     learning_allowed_origins=origin, learning_shutdown_timeout=2,
     audio_temp_dir=str(output / 'audio'), cache_dir=str(output / 'cache'), model_cache_dir=str(output / 'models'))
 errors=settings.get_configuration_errors()
@@ -125,7 +125,7 @@ function decodeAudio(file) {
   const operations = [];
   const timings = [];
   const summary = { passed: false, output, synthetic_input: !process.env.INT2_INPUT_WAV, input_text: speechText,
-    teaching_api_intercepted: false, providers_replaced: false };
+    teaching_api_intercepted: false, providers_replaced: false, operation_recoveries: [] };
   async function startAPI(phase) {
     const log = await fs.open(path.join(output, `api-${phase}.log`), 'w'); handles.push(log);
     const child = spawn(python, ['-c', bootstrap, root, output, String(apiPort), uiUrl, phase], {
@@ -181,7 +181,10 @@ function decodeAudio(file) {
       return response.json();
     };
     const session = async () => (await get('/sessions')).items[0];
-    async function submit(button, suffix, label) {
+    async function submit(button, suffix, label, recoveryAllowed = true) {
+      const draft = suffix === '/turns' && label.startsWith('text-turn-')
+        ? await page.getByRole('textbox', { name: '我的任务回答', exact: true }).inputValue() : null;
+      const before = draft === null ? null : await session();
       const started = Date.now();
       console.log(`Starting ${label}`);
       const acceptedResponse = page.waitForResponse(response => response.request().method() === 'POST'
@@ -198,8 +201,16 @@ function decodeAudio(file) {
       operations.push({ label, ...operation });
       await fs.writeFile(path.join(output, 'operations.json'), JSON.stringify(operations, null, 2));
       timings.push({ action: label, seconds: (Date.now() - started) / 1000 });
-      assert.equal(operation.status, 'succeeded', `${label}: ${JSON.stringify(operation.error)}`);
       await page.locator('.learning-pending').waitFor({ state: 'detached' });
+      if (operation.status === 'failed' && operation.error?.code === 'provider_failed' && draft !== null && recoveryAllowed) {
+        assert.deepEqual(await session(), before, 'Failed provider work must not change the saved session');
+        assert.equal(await page.getByRole('textbox', { name: '我的任务回答', exact: true }).inputValue(), draft);
+        summary.operation_recoveries.push({ label, operation_id: operation.operation_id, error: operation.error });
+        const recovered = await submit(button, suffix, `${label}-explicit-retry`, false);
+        assert.notEqual(recovered.request_id, operation.request_id, 'A terminal failure needs a new explicit request');
+        return recovered;
+      }
+      assert.equal(operation.status, 'succeeded', `${label}: ${JSON.stringify(operation.error)}`);
       return operation;
     }
     async function recordSpeech() {
@@ -255,9 +266,19 @@ function decodeAudio(file) {
     summary.coach_audio = await saveAudio(active.turns.filter(turn => turn.role === 'assistant').at(-1).audio, 'coach-reply.mp3');
     summary.coach_playback = await play(page.getByRole('button', { name: '播放教练回复', exact: true }).last());
     await submit(page.getByRole('button', { name: '结束对话，查看反馈', exact: true }), '/finish', 'finish-feedback');
-    const completed = await session();
+    let completed = await session();
     assert.equal(completed.status, 'completed');
-    assert.equal(completed.feedback.status, 'available', completed.feedback.reason);
+    summary.feedback_generation = [{ status: completed.feedback.status, reason: completed.feedback.reason }];
+    summary.feedback_retry_used = false;
+    if (completed.feedback.status === 'unavailable') {
+      assert.equal(completed.turns.filter(turn => turn.role === 'user').length, 3);
+      assert.ok(completed.turns.some(turn => turn.turn_id === spoken.turn_id && turn.audio?.state === 'available'));
+      summary.feedback_retry_used = true;
+      await submit(page.getByRole('button', { name: '重新生成本次反馈', exact: true }), '/feedback', 'feedback-retry');
+      completed = await session();
+      summary.feedback_generation.push({ status: completed.feedback.status, reason: completed.feedback.reason });
+    }
+    assert.ok(['available', 'partial'].includes(completed.feedback.status), completed.feedback.reason);
     assert.ok(completed.feedback.focuses.length > 0, 'The intentional past-tense error should produce a grounded focus');
     assert.ok(completed.feedback.focuses.length <= 2);
     for (const focus of completed.feedback.focuses) {
@@ -307,7 +328,12 @@ function decodeAudio(file) {
     await page.screenshot({ path: path.join(output, 'live-weekend-practice-mobile.png'), animations: 'disabled' });
     const events = (await fs.readFile(path.join(output, 'provider-calls-initial.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(events.filter(event => event.kind === 'asr').length, 2);
-    assert.ok(events.every(event => event.succeeded));
+    const providerFailures = events.filter(event => !event.succeeded);
+    assert.ok(providerFailures.every(event => event.kind === 'llm' && (
+      (summary.feedback_retry_used && event.action === 'feedback') ||
+      (summary.operation_recoveries.length > 0 && event.action === 'coaching')
+    )));
+    summary.provider_failures = providerFailures;
     assert.deepEqual(errors, []);
     Object.assign(summary, { passed: true, user_turns: 3, linked_retries: 2, attempts: before.attempts.length,
       feedback_status: before.feedback.status, feedback: before.feedback, retry_evaluations: chain.slice(1).map(attempt => attempt.evaluation),

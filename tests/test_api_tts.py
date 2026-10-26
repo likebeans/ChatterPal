@@ -12,6 +12,7 @@ import pytest
 
 from chatterpal.core.asr.base import ASRResult, ConfidenceLevel
 from chatterpal.core.tts.edge import EdgeTTS
+from chatterpal.core.tts.base import TTSResult
 from chatterpal.services.chat import AudioChatResult, ChatService
 from chatterpal.web import api_server
 
@@ -32,6 +33,7 @@ def api(monkeypatch, tmp_path):
 @pytest.fixture
 def offline_chat_api(api, monkeypatch):
     """Keep routes, ChatService, and EdgeTTS real; replace provider boundaries."""
+
     def recognize(audio_data, **kwargs):
         return ASRResult(
             text=Path(audio_data).read_text(),
@@ -54,15 +56,6 @@ def offline_chat_api(api, monkeypatch):
     )
     api.chat_service = ChatService(asr=api.asr, tts=api.tts, llm=api.llm)
     monkeypatch.setattr("edge_tts.Communicate", communicate)
-    # Freeze filename time without changing the real event loop's deadlines.
-    monkeypatch.setattr(
-        api_server,
-        "asyncio",
-        SimpleNamespace(
-            get_event_loop=lambda: SimpleNamespace(time=lambda: 1000.0),
-            to_thread=asyncio.to_thread,
-        ),
-    )
     return api
 
 
@@ -175,6 +168,7 @@ def test_concurrent_same_session_replies_remain_separately_downloadable(
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=api.app), base_url="http://test"
         ) as client:
+
             async def send(message):
                 if chat_kind == "text":
                     return await client.post(
@@ -193,7 +187,11 @@ def test_concurrent_same_session_replies_remain_separately_downloadable(
             )
             assert first.status_code == second.status_code == 200
             first_data, second_data = first.json(), second.json()
-            assert first_data["session_id"] == second_data["session_id"] == "shared-session"
+            assert (
+                first_data["session_id"]
+                == second_data["session_id"]
+                == "shared-session"
+            )
             assert first_data["audio_url"] and second_data["audio_url"]
             assert first_data["audio_url"] != second_data["audio_url"]
             for data, expected in (
@@ -408,7 +406,7 @@ def test_chat_synthesis_runs_outside_api_loop(api, monkeypatch):
     assert response.status_code == 200
     assert response.json()["audio_url"].startswith("/api/audio/")
     assert synthesis_threads and synthesis_threads[0] != api_loop_thread
-    assert list(api.temp_dir.glob("response_*.wav"))[0].read_bytes() == b"mock audio"
+    assert list(api.temp_dir.glob("response_*.bin"))[0].read_bytes() == b"mock audio"
 
 
 def test_audio_chat_synthesis_keeps_api_loop_responsive(api, monkeypatch):
@@ -428,11 +426,13 @@ def test_audio_chat_synthesis_keeps_api_loop_responsive(api, monkeypatch):
     )
     api.asr = None
     api.chat_service = Mock()
-    api.chat_service.chat_with_audio_result.side_effect = lambda **kwargs: AudioChatResult(
-        recognized_text="Hello from the user",
-        response_text="Hello",
-        response_audio=api.tts.synthesize("Hello"),
-        session_id="test-session",
+    api.chat_service.chat_with_audio_result.side_effect = (
+        lambda **kwargs: AudioChatResult(
+            recognized_text="Hello from the user",
+            response_text="Hello",
+            response_audio=api.tts.synthesize("Hello"),
+            session_id="test-session",
+        )
     )
 
     async def request():
@@ -494,12 +494,100 @@ def test_voices_service_failure_caches_consistent_fallback(api, monkeypatch, cap
     assert caplog.text.count("voice service offline") == 1
 
 
+@pytest.mark.parametrize("chat_kind", ["text", "audio"])
+def test_concurrent_request_voices_reach_sdk_without_mutating_provider(
+    offline_chat_api, monkeypatch, chat_kind
+):
+    api = offline_chat_api
+    api.settings.api_max_pending = 2
+    barrier = threading.Barrier(2)
+    requests = []
+    original_voice = api.tts.voice
+
+    def communicate(text, voice, **kwargs):
+        requests.append((text, voice))
+
+        async def save(output_path):
+            barrier.wait(timeout=3)
+            Path(output_path).write_bytes(b"ID3" + voice.encode())
+
+        return SimpleNamespace(save=save)
+
+    monkeypatch.setattr("edge_tts.Communicate", communicate)
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api.app), base_url="http://test"
+        ) as client:
+
+            async def send(voice):
+                if chat_kind == "text":
+                    return await client.post(
+                        "/api/chat", json={"message": "same text", "voice": voice}
+                    )
+                return await client.post(
+                    "/api/chat/audio",
+                    files={"audio": ("input.wav", b"same text")},
+                    data={"voice": voice},
+                )
+
+            voices = ["en-US-JennyNeural", "en-GB-SoniaNeural"]
+            responses = await asyncio.wait_for(
+                asyncio.gather(*(send(voice) for voice in voices)), 5
+            )
+            for response, voice in zip(responses, voices):
+                assert response.status_code == 200, response.text
+                url = response.json()["audio_url"]
+                assert url.endswith(".mp3")
+                audio = await client.get(url)
+                assert audio.headers["content-type"] == "audio/mpeg"
+                assert audio.content == b"ID3" + voice.encode()
+
+    asyncio.run(run())
+    assert {voice for _, voice in requests} == {
+        "en-US-JennyNeural",
+        "en-GB-SoniaNeural",
+    }
+    assert api.tts.voice == original_voice
+
+
+def test_explicit_pcm_tts_is_wrapped_for_browser_playback(api, monkeypatch):
+    import io
+    import wave
+
+    pcm = b"\x01\x00" * 160
+    api.chat_service = SimpleNamespace(
+        chat_with_text=lambda **kwargs: ("coach", "session")
+    )
+    monkeypatch.setattr(
+        api.tts,
+        "synthesize_with_error_handling",
+        lambda text, **kwargs: TTSResult(text, pcm, 0.01, "pcm", 16000, False, 0, {}),
+    )
+
+    async def run():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api.app), base_url="http://test"
+        ) as client:
+            response = await client.post("/api/chat", json={"message": "learner"})
+            assert response.status_code == 200
+            assert response.json()["audio_url"].endswith(".wav")
+            output = await client.get(response.json()["audio_url"])
+            assert output.headers["content-type"] == "audio/wav"
+            with wave.open(io.BytesIO(output.content), "rb") as audio:
+                assert audio.getframerate() == 16000
+                assert audio.getnchannels() == 1
+                assert audio.readframes(160) == pcm
+
+    asyncio.run(run())
+
+
 def test_core_initialization_forwards_settings_to_provider_factories(monkeypatch):
     settings = SimpleNamespace(asr_provider="alibaba", llm_provider="openai")
     server = api_server.APIServer.__new__(api_server.APIServer)
     server.settings = settings
     server.logger = Mock()
-    asr, tts, llm, corrector = Mock(), Mock(), Mock(), Mock()
+    asr, tts, llm = Mock(), Mock(), Mock()
     create_asr, create_tts, create_llm = (
         Mock(return_value=asr),
         Mock(return_value=tts),
@@ -508,18 +596,10 @@ def test_core_initialization_forwards_settings_to_provider_factories(monkeypatch
     monkeypatch.setattr(api_server, "create_asr", create_asr)
     monkeypatch.setattr(api_server, "create_tts", create_tts)
     monkeypatch.setattr(api_server, "create_llm", create_llm)
-    monkeypatch.setattr(
-        api_server, "PronunciationCorrector", Mock(return_value=corrector)
-    )
 
     server._init_core_components()
 
     create_asr.assert_called_once_with(settings)
     create_tts.assert_called_once_with(settings)
     create_llm.assert_called_once_with(settings)
-    assert (server.asr, server.tts, server.llm, server.corrector) == (
-        asr,
-        tts,
-        llm,
-        corrector,
-    )
+    assert (server.asr, server.tts, server.llm) == (asr, tts, llm)

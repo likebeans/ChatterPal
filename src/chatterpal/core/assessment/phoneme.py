@@ -16,14 +16,7 @@ try:
 except ImportError:
     parselmouth = None
 
-try:
-    import scipy.signal
-    from scipy import stats
-except ImportError:
-    scipy = None
-
-from .base import AssessmentBase, AssessmentError, PhonemeAnalysis
-from ...utils.encoding_fix import safe_str
+from .base import AssessmentBase, AssessmentError, PhonemeAnalysis, finite_number, dimension_result
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +119,7 @@ class PhonemeAnalyzer(AssessmentBase):
 
             try:
                 if not parselmouth:
-                    self.logger.warning("Parselmouth库未安装，使用默认分析")
+                    self.logger.warning("Parselmouth库未安装，声学测量不可用")
                     return self._get_default_analysis()
 
                 # 加载音频
@@ -142,10 +135,8 @@ class PhonemeAnalyzer(AssessmentBase):
                 intensity_analysis = self._analyze_intensity(sound)
                 spectral_analysis = self._analyze_spectrum(sound)
 
-                # 计算质量评分
-                quality_score = self._calculate_quality_score(
-                    pitch_analysis, formant_analysis, intensity_analysis
-                )
+                # Recording statistics are not calibrated quality/ability scores.
+                quality_score = None
 
                 components = {
                     "pitch": pitch_analysis,
@@ -163,7 +154,9 @@ class PhonemeAnalyzer(AssessmentBase):
                     "sample_rate": sample_rate,
                     **components,
                     "quality_score": quality_score,
-                    "quality_source": "legacy_heuristic_uncalibrated",
+                    "quality_source": "unavailable",
+                    "dimensions": {"quality": dimension_result(reason="没有经过校准的录音质量评分方法")},
+                    "scope": "整段录音声学特征；未进行音素对齐，未校准能力评分",
                     "analysis_success": True,
                     "analysis_status": "partial" if feature_errors else "measured",
                     "feature_errors": feature_errors,
@@ -415,18 +408,18 @@ class PhonemeAnalyzer(AssessmentBase):
         except Exception as e:
             self.logger.warning(f"频谱分析失败: {e}")
             return {
-                "centroid": 1000.0,
-                "spread": 500.0,
-                "skewness": 0.0,
-                "bandwidth": 4000.0,
+                "centroid": None,
+                "spread": None,
+                "skewness": None,
+                "bandwidth": None,
                 "available": False,
-                "source": "unavailable_legacy_default",
+                "source": "unavailable",
                 "error": str(e),
             }
 
     def _calculate_quality_score(
         self, pitch_analysis: Dict, formant_analysis: Dict, intensity_analysis: Dict
-    ) -> float:
+    ) -> Optional[float]:
         """
         计算语音质量评分
 
@@ -438,40 +431,8 @@ class PhonemeAnalyzer(AssessmentBase):
         Returns:
             质量评分 (0-100)
         """
-        try:
-            score = 0.0
-
-            # 音调稳定性评分 (30%)
-            pitch_stability = 1.0 - min(
-                1.0, pitch_analysis["std"] / max(1.0, pitch_analysis["mean"])
-            )
-            score += pitch_stability * 30
-
-            # 共振峰清晰度评分 (40%)
-            f1_clarity = 1.0 - min(
-                1.0,
-                formant_analysis["F1"]["std"]
-                / max(1.0, formant_analysis["F1"]["mean"]),
-            )
-            f2_clarity = 1.0 - min(
-                1.0,
-                formant_analysis["F2"]["std"]
-                / max(1.0, formant_analysis["F2"]["mean"]),
-            )
-            formant_clarity = (f1_clarity + f2_clarity) / 2
-            score += formant_clarity * 40
-
-            # 强度一致性评分 (30%)
-            intensity_consistency = 1.0 - min(
-                1.0, intensity_analysis["std"] / max(1.0, intensity_analysis["mean"])
-            )
-            score += intensity_consistency * 30
-
-            return max(0.0, min(100.0, score))
-
-        except Exception as e:
-            self.logger.warning(f"质量评分计算失败: {e}")
-            return 70.0
+        # Pitch/formant stability is not a calibrated recording-quality score.
+        return None
 
     def detect_vowel_errors(
         self, formant_analysis: Dict, target_vowel: str = None
@@ -486,88 +447,9 @@ class PhonemeAnalyzer(AssessmentBase):
         Returns:
             错误检测结果列表
         """
-        errors = []
-
-        try:
-            if not target_vowel or target_vowel not in self.standard_vowels:
-                # 通用元音质量检测
-                f1_mean = formant_analysis["F1"]["mean"]
-                f2_mean = formant_analysis["F2"]["mean"]
-
-                # 检测是否在合理范围内
-                if f1_mean < 200 or f1_mean > 1000:
-                    errors.append(
-                        PhonemeAnalysis(
-                            phoneme="vowel",
-                            error_type="vowel_f1_abnormal",
-                            description=f"第一共振峰异常: {f1_mean:.0f} Hz",
-                            correction_method=["调整舌位高低，注意口腔开合度"],
-                            severity="high",
-                            actual_formants={"F1": f1_mean},
-                        )
-                    )
-
-                if f2_mean < 800 or f2_mean > 3000:
-                    errors.append(
-                        PhonemeAnalysis(
-                            phoneme="vowel",
-                            error_type="vowel_f2_abnormal",
-                            description=f"第二共振峰异常: {f2_mean:.0f} Hz",
-                            correction_method=["调整舌位前后，注意舌尖位置"],
-                            severity="high",
-                            actual_formants={"F2": f2_mean},
-                        )
-                    )
-            else:
-                # 特定元音错误检测
-                standard = self.standard_vowels[target_vowel]
-                f1_diff = abs(formant_analysis["F1"]["mean"] - standard["F1"])
-                f2_diff = abs(formant_analysis["F2"]["mean"] - standard["F2"])
-
-                if f1_diff > 100:  # F1偏差超过100Hz
-                    severity = "medium" if f1_diff < 200 else "high"
-                    suggestion = (
-                        "调整舌位高低"
-                        if formant_analysis["F1"]["mean"] > standard["F1"]
-                        else "舌位需要更高"
-                    )
-
-                    errors.append(
-                        PhonemeAnalysis(
-                            phoneme=target_vowel,
-                            error_type="vowel_height_error",
-                            description=f'元音高度错误: 实际F1={formant_analysis["F1"]["mean"]:.0f}Hz, 标准F1={standard["F1"]}Hz',
-                            correction_method=[suggestion],
-                            severity=severity,
-                            target_formants={"F1": standard["F1"]},
-                            actual_formants={"F1": formant_analysis["F1"]["mean"]},
-                        )
-                    )
-
-                if f2_diff > 200:  # F2偏差超过200Hz
-                    severity = "medium" if f2_diff < 400 else "high"
-                    suggestion = (
-                        "舌位需要更前"
-                        if formant_analysis["F2"]["mean"] < standard["F2"]
-                        else "舌位需要更后"
-                    )
-
-                    errors.append(
-                        PhonemeAnalysis(
-                            phoneme=target_vowel,
-                            error_type="vowel_backness_error",
-                            description=f'元音前后位置错误: 实际F2={formant_analysis["F2"]["mean"]:.0f}Hz, 标准F2={standard["F2"]}Hz',
-                            correction_method=[suggestion],
-                            severity=severity,
-                            target_formants={"F2": standard["F2"]},
-                            actual_formants={"F2": formant_analysis["F2"]["mean"]},
-                        )
-                    )
-
-        except Exception as e:
-            self.logger.error(f"元音错误检测失败: {e}")
-
-        return errors
+        # These are whole-recording formants, not aligned observations of a
+        # target vowel. Comparing them to one adult reference invents errors.
+        return []
 
     def generate_pronunciation_feedback(
         self, analysis_result: Dict[str, Any], target_text: str = ""
@@ -582,88 +464,52 @@ class PhonemeAnalyzer(AssessmentBase):
         Returns:
             反馈文本
         """
-        try:
-            feedback = "## 🔬 专业语音分析报告\n\n"
-
-            # 基础信息
-            feedback += f"### 📊 基础信息\n"
-            feedback += f"- **音频时长**: {analysis_result['duration']:.2f} 秒\n"
-            feedback += f"- **采样率**: {analysis_result['sample_rate']:.0f} Hz\n"
-            feedback += (
-                f"- **整体质量评分**: {analysis_result['quality_score']:.1f}/100\n\n"
-            )
-
-            # 音调分析
-            pitch = analysis_result["pitch"]
-            feedback += f"### 🎵 音调分析\n"
-            feedback += f"- **平均音调**: {pitch['mean']:.1f} Hz\n"
-            feedback += f"- **音调范围**: {pitch['min']:.1f} - {pitch['max']:.1f} Hz\n"
-            feedback += f"- **音调变化**: {pitch['std']:.1f} Hz\n"
-            feedback += f"- **有声比例**: {pitch['voicing_ratio']:.1%}\n\n"
-
-            # 共振峰分析
-            formants = analysis_result["formants"]
-            feedback += f"### 🔊 共振峰分析\n"
-            feedback += f"- **F1 (舌位高低)**: {formants['F1']['mean']:.0f} ± {formants['F1']['std']:.0f} Hz\n"
-            feedback += f"- **F2 (舌位前后)**: {formants['F2']['mean']:.0f} ± {formants['F2']['std']:.0f} Hz\n"
-            feedback += f"- **F3 (唇形)**: {formants['F3']['mean']:.0f} ± {formants['F3']['std']:.0f} Hz\n\n"
-
-            # 错误检测
-            vowel_errors = self.detect_vowel_errors(formants)
-            if vowel_errors:
-                feedback += f"### ⚠️ 发音问题检测\n"
-                for error in vowel_errors:
-                    severity_emoji = "🔴" if error.severity == "high" else "🟡"
-                    feedback += f"{severity_emoji} **{error.description}**\n"
-                    for method in error.correction_method:
-                        feedback += f"   💡 建议: {method}\n"
-                    feedback += "\n"
-
-            # 改进建议
-            feedback += f"### 💡 专业改进建议\n"
-
-            quality_score = analysis_result["quality_score"]
-            if quality_score < 60:
-                feedback += "- 🎯 **重点练习**: 基础发音准确性\n"
-                feedback += "- 📚 **建议**: 从单个音素开始练习，注意口型和舌位\n"
-            elif quality_score < 80:
-                feedback += "- 🎯 **重点练习**: 音调控制和共振峰稳定性\n"
-                feedback += "- 📚 **建议**: 练习长音发音，保持音质一致性\n"
-            else:
-                feedback += "- 🎉 **表现优秀**: 发音质量很好！\n"
-                feedback += "- 📚 **建议**: 可以尝试更复杂的语音练习\n"
-
-            return feedback
-
-        except Exception as e:
-            self.logger.error(f"反馈生成失败: {e}")
-            return f"反馈生成失败: {safe_str(e)}"
+        lines = [
+            "整段录音声学摘要；未进行音素对齐，不能判断具体音素错误。",
+            "能力及录音质量评分未校准，暂不提供分数。",
+        ]
+        if analysis_result.get("analysis_success") is not True:
+            lines.append(f"声学分析不可用：{analysis_result.get('error') or '未取得实测数据'}")
+            return "\n\n".join(lines)
+        for key, label, unit in (("duration", "时长", "秒"), ("sample_rate", "采样率", "Hz")):
+            value = analysis_result.get(key)
+            if finite_number(value, 0):
+                lines.append(f"{label}：{value:.2f} {unit}")
+        pitch = analysis_result.get("pitch", {})
+        if pitch.get("available") is True and finite_number(pitch.get("mean"), 0):
+            lines.append(f"基频均值：{pitch['mean']:.1f} Hz（整段录音）")
+        else:
+            lines.append("基频不可用：没有有效有声帧或提取失败")
+        lines.append("结合参考音频回听；如需发音判断，可寻求老师反馈。")
+        return "\n\n".join(lines)
 
     def _get_default_analysis(self) -> Dict[str, Any]:
         """获取默认分析结果"""
         return {
-            "duration": 1.0,
-            "sample_rate": 16000,
+            "duration": None,
+            "sample_rate": None,
             "pitch": self._get_default_pitch(),
             "formants": self._get_default_formants(),
             "intensity": self._get_default_intensity(),
             "spectral": {
-                "centroid": 1000.0,
-                "spread": 500.0,
-                "skewness": 0.0,
-                "bandwidth": 4000.0,
+                "centroid": None,
+                "spread": None,
+                "skewness": None,
+                "bandwidth": None,
                 "available": False,
-                "source": "unavailable_legacy_default",
+                "source": "unavailable",
                 "error": "Parselmouth unavailable",
             },
-            "quality_score": 70.0,
-            "quality_source": "unavailable_legacy_default",
+            "quality_score": None,
+            "dimensions": {"quality": dimension_result(reason="声学后端不可用")},
+            "scope": "声学分析不可用；没有测量发音准确率或语言能力",
+            "quality_source": "unavailable",
             "analysis_success": False,
             "analysis_status": "unavailable",
             "error": "Parselmouth unavailable; no acoustic features measured",
             "feature_sources": dict.fromkeys(
                 ("duration", "sample_rate", "pitch", "formants", "intensity", "spectral"),
-                "unavailable_legacy_default",
+                "unavailable",
             ),
             "calibrated": False,
         }
@@ -671,17 +517,17 @@ class PhonemeAnalyzer(AssessmentBase):
     def _get_default_pitch(self, reason: str = "Pitch unavailable") -> Dict[str, Any]:
         """获取默认音调数据"""
         return {
-            "mean": 150.0,
-            "std": 25.0,
-            "min": 100.0,
-            "max": 200.0,
-            "range": 100.0,
-            "median": 150.0,
-            "voiced_frames": 100,
-            "total_frames": 120,
-            "voicing_ratio": 0.83,
+            "mean": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "range": None,
+            "median": None,
+            "voiced_frames": None,
+            "total_frames": None,
+            "voicing_ratio": None,
             "available": False,
-            "source": "unavailable_legacy_default",
+            "source": "unavailable",
             "error": reason,
         }
 
@@ -690,12 +536,12 @@ class PhonemeAnalyzer(AssessmentBase):
     ) -> Dict[str, Any]:
         """获取默认共振峰数据"""
         return {
-            "F1": {"mean": 500.0, "std": 50.0, "values": []},
-            "F2": {"mean": 1500.0, "std": 100.0, "values": []},
-            "F3": {"mean": 2500.0, "std": 150.0, "values": []},
-            "valid_frames": 100,
+            "F1": {"mean": None, "std": None, "values": []},
+            "F2": {"mean": None, "std": None, "values": []},
+            "F3": {"mean": None, "std": None, "values": []},
+            "valid_frames": 0,
             "available": False,
-            "source": "unavailable_legacy_default",
+            "source": "unavailable",
             "error": reason,
         }
 
@@ -704,13 +550,13 @@ class PhonemeAnalyzer(AssessmentBase):
     ) -> Dict[str, Any]:
         """获取默认强度数据"""
         return {
-            "mean": 60.0,
-            "std": 5.0,
-            "min": 50.0,
-            "max": 70.0,
-            "range": 20.0,
+            "mean": None,
+            "std": None,
+            "min": None,
+            "max": None,
+            "range": None,
             "available": False,
-            "source": "unavailable_legacy_default",
+            "source": "unavailable",
             "error": reason,
         }
 

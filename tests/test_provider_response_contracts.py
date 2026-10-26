@@ -870,13 +870,17 @@ def test_cosyvoice_retry_recovers_empty_and_failed_calls_with_result_metadata(
     assert result.sample_rate == 16000
     assert result.cached is False
     assert result.synthesis_time >= 0
-    assert result.metadata == {
+    expected_metadata = {
         "voice_name": "longmiao",
         "model": "cosyvoice-v1",
         "volume": 50,
         "speech_rate": 1.0,
         "pitch_rate": 1.0,
+        "attempt": 3,
+        "original_text": "Retry this",
+        "text_length": len("Retry this"),
     }
+    assert {key: result.metadata[key] for key in expected_metadata} == expected_metadata
     assert cosyvoice_sdk.synthesize.call_args_list == [call("Retry this")] * 3
     assert cosyvoice_sdk.constructor.call_count == 3
     assert all(
@@ -895,8 +899,15 @@ def test_cosyvoice_retry_exhaustion_stops_at_limit_and_keeps_last_error(
     ]
     tts = tts_module.AlibabaTTS({"api_key": "offline-key"})
 
-    with pytest.raises(TTSError, match=rf"已重试 {attempts} 次:.*failure {attempts}$"):
+    with pytest.raises(
+        TTSError, match=rf"已重试 {attempts} 次:.*failure {attempts}$"
+    ) as caught:
         tts.synthesize_with_error_handling("Hello", max_retries=attempts)
+    assert caught.value.metadata == {
+        "error_code": "TTS_SERVICE_ERROR",
+        "attempt": attempts,
+        "error_message": f"语音合成失败: failure {attempts}",
+    }
     assert cosyvoice_sdk.synthesize.call_args_list == [call("Hello")] * attempts
     assert cosyvoice_sdk.constructor.call_count == attempts
 

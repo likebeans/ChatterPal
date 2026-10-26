@@ -263,7 +263,9 @@ async def test_weekend_turns_feedback_two_retries_audio_and_restart(
         progress = (await client.get(f"{PREFIX}/progress")).json()
         assert progress["sessions_completed"] == 1 and progress["attempts_count"] == 3
         assert progress["retries_count"] == 2 and progress["reviews_completed"] == 0
-        assert (await client.get(f"{PREFIX}/reviews/due")).status_code == 503
+        due = await client.get(f"{PREFIX}/reviews/due")
+        assert due.status_code == 200
+        assert due.json()["items"] == []
         archived = (await client.get(f"{PREFIX}/export")).json()
         assert len(archived["records"]) == 4
         assert "content" not in archived["records"][0]["data"].get("audio", {})

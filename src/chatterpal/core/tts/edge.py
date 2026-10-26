@@ -18,6 +18,7 @@ except ImportError:
     edge_tts = None
 
 from .base import TTSBase, TTSError
+from .options import SynthesisOptions
 
 
 _Result = TypeVar("_Result")
@@ -82,6 +83,44 @@ class EdgeTTS(TTSBase):
         with ThreadPoolExecutor(max_workers=1) as executor:
             return executor.submit(run).result()
 
+    def resolve_synthesis_options(self, **kwargs) -> SynthesisOptions:
+        supplied = kwargs.get("options")
+        if supplied is not None:
+            if (
+                not isinstance(supplied, SynthesisOptions)
+                or supplied.provider != "edge"
+                or supplied.model != "edge-neural"
+                or supplied.format != "mp3"
+                or supplied.sample_rate != 24000
+                or supplied.extra
+            ):
+                raise TTSError("Edge TTS options无效")
+            return supplied
+        # edge-tts fixes its output to audio-24khz-48kbitrate-mono-mp3.
+        return SynthesisOptions(
+            provider="edge",
+            model="edge-neural",
+            voice=(
+                kwargs.get("voice") if kwargs.get("voice") is not None else self.voice
+            ),
+            rate=kwargs.get("rate") if kwargs.get("rate") is not None else self.rate,
+            volume=(
+                kwargs.get("volume")
+                if kwargs.get("volume") is not None
+                else self.volume
+            ),
+            pitch=(
+                kwargs.get("pitch") if kwargs.get("pitch") is not None else self.pitch
+            ),
+            format="mp3",
+            sample_rate=24000,
+        )
+
+    def _synthesis_kwargs(
+        self, options: SynthesisOptions, kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return {"options": options}
+
     def synthesize(self, text: str, **kwargs) -> bytes:
         """
         合成语音并返回音频数据
@@ -109,21 +148,22 @@ class EdgeTTS(TTSBase):
             if not cleaned_text:
                 raise TTSError("清理后的文本为空")
 
-            # 获取参数
-            voice = kwargs.get("voice", self.voice)
-            rate = kwargs.get("rate", self.rate)
-            pitch = kwargs.get("pitch", self.pitch)
-            volume = kwargs.get("volume", self.volume)
+            options = self.resolve_synthesis_options(**kwargs)
 
             # 使用临时文件进行合成
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
                 temp_path = temp_file.name
 
             try:
                 # 异步合成语音
                 success = self._run_async(
                     lambda: self._async_synthesize_to_file(
-                        cleaned_text, temp_path, voice, rate, pitch, volume
+                        cleaned_text,
+                        temp_path,
+                        options.voice,
+                        options.rate,
+                        options.pitch,
+                        options.volume,
                     )
                 )
 
@@ -177,16 +217,17 @@ class EdgeTTS(TTSBase):
             if not cleaned_text:
                 raise TTSError("清理后的文本为空")
 
-            # 获取参数
-            voice = kwargs.get("voice", self.voice)
-            rate = kwargs.get("rate", self.rate)
-            pitch = kwargs.get("pitch", self.pitch)
-            volume = kwargs.get("volume", self.volume)
+            options = self.resolve_synthesis_options(**kwargs)
 
             # 异步合成语音
             success = self._run_async(
                 lambda: self._async_synthesize_to_file(
-                    cleaned_text, output_path, voice, rate, pitch, volume
+                    cleaned_text,
+                    output_path,
+                    options.voice,
+                    options.rate,
+                    options.pitch,
+                    options.volume,
                 )
             )
 
@@ -394,7 +435,7 @@ class EdgeTTS(TTSBase):
         Returns:
             支持的音频格式列表
         """
-        return ["wav", "mp3"]
+        return ["mp3"]
 
     def test_connection(self) -> bool:
         """
@@ -407,7 +448,7 @@ class EdgeTTS(TTSBase):
             # 尝试合成一个简单的测试文本
             test_text = "Hello, this is a test."
 
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
                 temp_path = temp_file.name
 
             try:

@@ -21,59 +21,87 @@ classifiers = [
     "Topic :: Education",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
+# Keep configuration and CLI help usable without an audio/model/UI runtime.
+# Versions match the accepted lock; selecting extras does not upgrade providers.
 dependencies = [
-    "myprosody>=20",
-    "numpy>=1.21.0,<2.3.0",
-    "numba>=0.56.0",
-    "gradio>=4.0.0",
-    "fastapi>=0.115.0",
-    "uvicorn>=0.30.0",
-    "openai-whisper>=20231117",
-    "librosa>=0.10.0",
-    "soundfile>=0.12.0",
-    "scipy>=1.9.0",
-    "scikit-learn>=1.1.0",
-    "praat-parselmouth>=0.4.0",
-    "speechrecognition>=3.10.0",
-    "pyaudio>=0.2.11",
-    "requests>=2.28.0",
-
-    "matplotlib>=3.10.5",
-    "seaborn>=0.13.2",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "edge-tts>=7.3.1",
-    "pyyaml>=6.0.0",
-    # 增强聊天模块新增依赖
-    "openai>=1.0.0",
-    "aiofiles>=23.0.0",
-    "cachetools>=5.0.0",
-    "asyncio-throttle>=1.0.0",
-    "python-multipart>=0.0.6",
-    "websockets>=11.0.0",
-    "dashscope>=1.14.0",  # 阿里云 CosyVoice SDK
-    "uvloop>=0.17.0; sys_platform != 'win32'",
-    "dataclasses-json>=0.6.0",
-    "typing-extensions>=4.5.0",
+    "pydantic==2.11.7",
+    "pydantic-settings==2.10.1",
+    "python-dotenv==1.1.1",
+    "pyyaml==6.0.2",
+    "typing-extensions==4.14.1",
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi==0.116.1",
+    "uvicorn==0.35.0",
+    "python-multipart==0.0.20",
+    "aiofiles==24.1.0",
+    "uvloop==0.21.0; sys_platform != 'win32'",
+]
+audio = [
+    "numpy==2.2.6",
+    "soundfile==0.13.1",
+    "scipy==1.16.1",
+]
+aliyun-asr = [
+    "chatterpal[audio]==0.1.0",
+    # The official NLS SDK provides nls; it also declares matplotlib/OSS deps.
+    "alibabacloud-nls-python-sdk==1.0.2",
+]
+cloud = [
+    "chatterpal[audio,aliyun-asr]==0.1.0",
+    "requests==2.32.4",
+    "openai==1.99.9",
+    "dashscope==1.24.1",
+    "edge-tts==7.3.1",
+    "websockets==15.0.1",
+    "cachetools==6.1.0",
+    "asyncio-throttle==1.0.2",
+    "dataclasses-json==0.6.7",
+]
+local-whisper = [
+    "chatterpal[audio]==0.1.0",
+    "openai-whisper==20250625",
+    "speechrecognition==3.14.3",
+    "numba==0.61.2",
+]
+assessment = [
+    "chatterpal[audio]==0.1.0",
+    "myprosody==20",
+    "librosa==0.11.0",
+    "scikit-learn==1.7.1",
+    "praat-parselmouth==0.4.6",
+    "matplotlib==3.10.5",
+    "seaborn==0.13.2",
+]
+gradio = [
+    "chatterpal[api,cloud,local-whisper,assessment]==0.1.0",
+    "gradio==5.42.0",
+]
+microphone = [
+    "chatterpal[local-whisper]==0.1.0",
+    "pyaudio==0.2.14",
+]
+full = [
+    "chatterpal[api,cloud,local-whisper,assessment,gradio,microphone]==0.1.0",
+]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-asyncio>=0.21.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
-    "flake8>=6.0.0",
+    "chatterpal[full]==0.1.0",
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "pytest-asyncio>=1.1.0",
+    "black>=25.1.0",
+    "isort>=6.0.1",
+    "flake8>=7.3.0",
     "mypy>=1.0.0",
     "pre-commit>=3.0.0",
 ]
 
 [project.scripts]
-chatterpal = "chatterpal.web.app:main"
-chatterpal-setup = "scripts.setup:main"
-chatterpal-run = "scripts.run:main"
+chatterpal = "chatterpal.cli.run:main"
+chatterpal-setup = "chatterpal.cli.setup:main"
+chatterpal-run = "chatterpal.cli.run:main"
 
 [project.urls]
 Homepage = "https://github.com/chatterpal/chatterpal"
@@ -171,11 +199,5 @@ exclude_lines = [
 ]
 
 [dependency-groups]
-dev = [
-    "black>=25.1.0",
-    "flake8>=7.3.0",
-    "isort>=6.0.1",
-    "pytest>=8.4.1",
-    "pytest-asyncio>=1.1.0",
-    "pytest-cov>=6.2.1",
-]
+# `uv sync` and pip install 'chatterpal[dev]' share one development definition.
+dev = ["chatterpal[dev]==0.1.0"]

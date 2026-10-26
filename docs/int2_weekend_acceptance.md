@@ -1,6 +1,6 @@
 # INT2「描述周末」验收记录
 
-日期：2026-10-25。实现与离线联合验收完成；集成分支为 `integrate/product-round-2`。
+日期：2026-10-25。实现与离线联合验收完成；集成分支为 `integrate/product-round-2`，已合入 main。本文件保留 INT2 当时的验收范围；后续复习、评分可信状态和运行时优化见[2026-10-26 验收](remaining_optimizations_acceptance_2026-10-26.md)，下面的“尚未接入”不代表后续工作树状态。
 
 ## 交付结果
 
@@ -25,7 +25,7 @@
 | B2 任务与教练 | `98db184be7c250d1294f8ca18cec50f1a0812593` |
 | D2 前端 | 从 `ChatterPal-learning-ui` 获取 22 文件一致性快照，读取前后 SHA256 核对；原清单 `/tmp/chatterpal-int2-d2-snapshot.json` |
 
-A2/B2 以 diff 导入，D2 以文件快照导入，再完成本轮接线和修复。没有可报告的最终实现 commit；最终文件 SHA256 清单位于本地 `/tmp/chatterpal-int2-final/worktree-files.json`。原工作树保留原有未跟踪文档，main 工作树保持干净。
+A2/B2 以 diff 导入，D2 以文件快照导入，再完成本轮接线和修复。INT2 最终实现提交为 `f597ee783be74156aecf134639e9ef813ba0ea06`，随后已快进合入并推送 main；该提交在功能分支和 main 的 CI 均通过。以下全量离线结果记录的是提交前验收，真实提供商兼容修复及其专项结果见后文。原文件 SHA256 清单位于本地 `/tmp/chatterpal-int2-final/worktree-files.json`，它是当时的快照，不代表后续优化工作树。
 
 ## 最终验证
 

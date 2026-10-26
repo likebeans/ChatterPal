@@ -6,18 +6,19 @@
 
 import logging
 import time
-import io
 from typing import Optional, Dict, Any, Iterator, List
 from dataclasses import dataclass
 
 try:
-    from dashscope.audio.tts_v2 import SpeechSynthesizer
+    from dashscope.audio.tts_v2 import AudioFormat, SpeechSynthesizer
     import dashscope
 except ImportError:
+    AudioFormat = None
     SpeechSynthesizer = None
     dashscope = None
 
 from .base import TTSBase, TTSError, TTSResult
+from .options import SynthesisOptions
 
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,58 @@ class AlibabaTTS(TTSBase):
 
         self.logger.info(f"阿里百炼 TTS 初始化完成，模型: {self.tts_config.voice}, 语音: {self.tts_config.voice_name}")
 
+    @staticmethod
+    def _sdk_audio_format(format_type: str, sample_rate: int):
+        """CosyVoice encodes both container and sample rate in AudioFormat."""
+        if AudioFormat is not None:
+            for audio_format in AudioFormat:
+                if (
+                    audio_format.format == format_type
+                    and audio_format.sample_rate == sample_rate
+                ):
+                    return audio_format
+        raise TTSError(f"不支持的音频格式或采样率: {format_type}/{sample_rate}")
+
+    def resolve_synthesis_options(self, **kwargs) -> SynthesisOptions:
+        """Keep legacy model/voice names while snapshotting every SDK control."""
+        supplied = kwargs.get("options")
+        if supplied is not None:
+            if (
+                not isinstance(supplied, SynthesisOptions)
+                or supplied.provider != "alibaba"
+                or supplied.extra
+            ):
+                raise TTSError("Alibaba TTS options无效")
+            self._sdk_audio_format(supplied.format, supplied.sample_rate)
+            return supplied
+
+        def parameter(name, default):
+            value = kwargs.get(name)
+            return default if value is None else value
+
+        format_type = str(parameter("format", self.tts_config.format)).lower()
+        sample_rate = parameter("sample_rate", self.tts_config.sample_rate)
+        self._sdk_audio_format(format_type, sample_rate)
+        return SynthesisOptions(
+            provider="alibaba",
+            model=parameter("model", parameter("voice", self.tts_config.voice)),
+            voice=parameter("voice_name", self.tts_config.voice_name),
+            rate=parameter(
+                "speech_rate", parameter("rate", self.tts_config.speech_rate)
+            ),
+            volume=parameter("volume", self.tts_config.volume),
+            pitch=parameter(
+                "pitch_rate", parameter("pitch", self.tts_config.pitch_rate)
+            ),
+            format=format_type,
+            sample_rate=sample_rate,
+        )
+
+    def _synthesis_kwargs(
+        self, options: SynthesisOptions, kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return {"options": options}
+
     def synthesize(self, text: str, **kwargs) -> bytes:
         """
         同步语音合成
@@ -100,19 +153,22 @@ class AlibabaTTS(TTSBase):
             TTSError: 合成过程中的错误
         """
         start_time = time.time()
-        
-        try:
-            # 合并配置参数
-            voice = kwargs.get("voice", self.tts_config.voice)
-            voice_name = kwargs.get("voice_name", self.tts_config.voice_name)
-            format_type = kwargs.get("format", self.tts_config.format)
-            sample_rate = kwargs.get("sample_rate", self.tts_config.sample_rate)
-            speech_rate = kwargs.get("speech_rate", self.tts_config.speech_rate)
-            pitch_rate = kwargs.get("pitch_rate", self.tts_config.pitch_rate)
 
-            # 实例化SpeechSynthesizer，传入模型和音色参数
-            synthesizer = SpeechSynthesizer(model=voice, voice=voice_name)
-            
+        try:
+            if not self.validate_text(text):
+                raise TTSError("输入文本无效")
+            options = self.resolve_synthesis_options(**kwargs)
+            audio_format = self._sdk_audio_format(options.format, options.sample_rate)
+
+            synthesizer = SpeechSynthesizer(
+                model=options.model,
+                voice=options.voice,
+                format=audio_format,
+                volume=options.volume,
+                speech_rate=options.rate,
+                pitch_rate=options.pitch,
+            )
+
             # 调用阿里云 TTS API
             audio_data = synthesizer.call(text)
 
@@ -122,7 +178,9 @@ class AlibabaTTS(TTSBase):
                     raise TTSError("合成失败，音频数据不是二进制数据")
                 audio_data = bytes(audio_data)
                 synthesis_time = time.time() - start_time
-                self.logger.info(f"语音合成完成，耗时: {synthesis_time:.2f}s，音频大小: {len(audio_data)} bytes")
+                self.logger.info(
+                    f"语音合成完成，耗时: {synthesis_time:.2f}s，音频大小: {len(audio_data)} bytes"
+                )
                 return audio_data
             else:
                 raise TTSError("合成失败，无音频数据")
@@ -149,7 +207,7 @@ class AlibabaTTS(TTSBase):
         try:
             # 对于不支持流式的情况，返回完整音频数据
             audio_data = self.synthesize(text, **kwargs)
-            
+
             # 将音频数据分块返回，模拟流式效果
             chunk_size = 4096
             for i in range(0, len(audio_data), chunk_size):
@@ -159,57 +217,46 @@ class AlibabaTTS(TTSBase):
             self.logger.error(f"流式语音合成失败: {e}")
             raise TTSError(f"流式语音合成失败: {e}")
 
-    def synthesize_with_error_handling(self, text: str, max_retries: int = 3, **kwargs) -> TTSResult:
-        """
-        带错误处理的语音合成
+    def synthesize_with_error_handling(
+        self, text: str, max_retries: int = 3, **kwargs
+    ) -> TTSResult:
+        """Reuse the shared cache and retry pipeline with immutable SDK options."""
+        from ..errors import SpeechSynthesisError
 
-        Args:
-            text: 要合成的文本
-            max_retries: 最大重试次数
-            **kwargs: 其他参数
+        try:
+            options = self.resolve_synthesis_options(**kwargs)
+            result = super().synthesize_with_error_handling(
+                text, max_retries=max_retries, options=options
+            )
+        except SpeechSynthesisError as error:
+            # Keep the legacy exception and final diagnostic after shared retries.
+            metadata = error.error_info.metadata
+            detail = str(metadata.get("error_message", str(error)))
+            detail = detail.replace(self.api_key, "[redacted]")
+            attempt = metadata.get("attempt", 0)
+            raise TTSError(
+                f"语音合成失败，已重试 {attempt} 次: {detail}",
+                metadata={
+                    "error_code": error.error_info.code,
+                    "attempt": attempt,
+                    "error_message": detail,
+                },
+            ) from error
+        result.metadata.update(
+            {
+                "voice_name": options.voice,
+                "model": options.model,
+                "volume": options.volume,
+                "speech_rate": options.rate,
+                "pitch_rate": options.pitch,
+            }
+        )
+        return result
 
-        Returns:
-            TTS结果对象
-
-        Raises:
-            TTSError: 合成失败
-        """
-        last_error = None
-        
-        for attempt in range(max_retries):
-            try:
-                start_time = time.time()
-                audio_data = self.synthesize(text, **kwargs)
-                synthesis_time = time.time() - start_time
-                
-                return TTSResult(
-                    text=text,
-                    audio_data=audio_data,
-                    duration=self._estimate_audio_duration(audio_data),
-                    format=kwargs.get("format", self.tts_config.format),
-                    sample_rate=kwargs.get("sample_rate", self.tts_config.sample_rate),
-                    cached=False,
-                    synthesis_time=synthesis_time,
-                    metadata={
-                        "voice_name": kwargs.get("voice_name", self.tts_config.voice_name),
-                        "model": kwargs.get("voice", self.tts_config.voice),
-                        "volume": kwargs.get("volume", self.tts_config.volume),
-                        "speech_rate": kwargs.get("speech_rate", self.tts_config.speech_rate),
-                        "pitch_rate": kwargs.get("pitch_rate", self.tts_config.pitch_rate)
-                    }
-                )
-                
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    self.logger.warning(f"语音合成失败，重试 {attempt + 1}/{max_retries}: {e}")
-                    time.sleep(0.5 * (attempt + 1))  # 指数退避
-                    continue
-                else:
-                    self.logger.error(f"语音合成最终失败: {e}")
-                    break
-        
-        raise TTSError(f"语音合成失败，已重试 {max_retries} 次: {last_error}")
+    def get_supported_formats(self) -> List[str]:
+        if AudioFormat is None:
+            return []
+        return sorted({item.format for item in AudioFormat if item.sample_rate > 0})
 
     def get_supported_voices(self) -> List[str]:
         """
@@ -299,7 +346,7 @@ class AlibabaTTS(TTSBase):
                 "description": "浑厚有力的男声"
             }
         }
-        
+
         return voice_info_map.get(voice, {
             "name": voice,
             "language": "unknown",
@@ -318,14 +365,14 @@ class AlibabaTTS(TTSBase):
             # 测试简单的语音合成
             test_text = "Hello, this is a test."
             audio_data = self.synthesize(test_text)
-            
+
             if audio_data and len(audio_data) > 0:
                 self.logger.info("阿里百炼 TTS 连接测试成功")
                 return True
             else:
                 self.logger.error("阿里百炼 TTS 连接测试失败：无音频数据")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"阿里百炼 TTS 连接测试失败: {e}")
             return False
@@ -348,17 +395,17 @@ class AlibabaTTS(TTSBase):
         try:
             # 合成音频数据
             audio_data = self.synthesize(text, **kwargs)
-            
+
             if not audio_data:
                 raise TTSError("合成失败，无音频数据")
-            
+
             # 保存到文件
             with open(output_path, "wb") as f:
                 f.write(audio_data)
-            
+
             self.logger.info(f"音频已保存到: {output_path}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"保存音频文件失败: {e}")
             raise TTSError(f"保存音频文件失败: {e}")
@@ -369,7 +416,7 @@ class AlibabaTTS(TTSBase):
             # 简单估算：假设是16位PCM，22050Hz采样率
             sample_rate = self.tts_config.sample_rate
             bytes_per_sample = 2  # 16位 = 2字节
-            
+
             # 尝试从WAV头部获取信息
             if len(audio_data) > 44 and audio_data[:4] == b'RIFF':
                 # WAV文件格式
@@ -380,7 +427,7 @@ class AlibabaTTS(TTSBase):
                     # 读取位深度（字节34-35）
                     bits_per_sample = struct.unpack('<H', audio_data[34:36])[0]
                     bytes_per_sample = bits_per_sample // 8
-                    
+
                     # 音频数据从字节44开始
                     audio_data_size = len(audio_data) - 44
                 except:
@@ -388,10 +435,10 @@ class AlibabaTTS(TTSBase):
                     audio_data_size = len(audio_data)
             else:
                 audio_data_size = len(audio_data)
-            
+
             duration = audio_data_size / (sample_rate * bytes_per_sample)
             return max(0.0, duration)
-            
+
         except Exception as e:
             self.logger.warning(f"音频时长估算失败: {e}")
             return 0.0

@@ -61,15 +61,25 @@ async function addApi(page, state) {
       if (state.failAnalysis) return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Analysis provider unavailable' }) });
       const stale = Boolean(state.holdAnalysis);
       if (stale) await new Promise(resolve => { state.releaseAnalysis = resolve; });
-      data = { overall_score: 82, recognized_text: stale ? 'Stale recognized words' : 'Actual recognized words', corrections: [{ type: 'grammar', original: 'go', corrected: 'went', explanation: 'Use the past tense' }], suggestions: ['Repeat the sentence slowly'] };
+      data = {
+        overall_score: null, recognized_text: stale ? 'Stale recognized words' : 'Actual recognized words',
+        corrections: [{ type: 'grammar', original: 'go', corrected: 'went', explanation: 'Use the past tense' }], suggestions: ['Repeat the sentence slowly'],
+        calibrated: false, scope: '识别文本对齐和录音声学摘要；未校准，不能判断发音能力。',
+        dimensions: {
+          overall: { score: null, status: 'unavailable', source: 'none', reason: '没有经过校准的综合评分方法', evidence: {}, unit: null, calibrated: false },
+          accuracy: { score: 75, status: 'measured', source: 'text_sequence_alignment', reason: '文本有序词编辑一致度，差异可能来自识别错误', evidence: { edit_distance: 1 }, unit: 'percent', calibrated: false },
+        },
+      };
     } else if (url.pathname === '/api/pronunciation/ai-analyze') {
       state.uploads.push(wavFromUpload(request));
       data = {
-        overall_score: 84, recognized_text: 'AI recognized words',
+        overall_score: null, recognized_text: 'AI recognized words',
         grammar_corrections: [], pronunciation_feedback: [], scenario_suggestions: [],
-        personalized_tips: ['Speak steadily'], difficulty_level: 'intermediate',
-        next_scenario: 'job_interview-intermediate', confidence_score: 0.82,
-        detailed_analysis: 'Browser AI analysis contract',
+        personalized_tips: ['Speak steadily'], difficulty_level: null,
+        next_scenario: null, confidence_score: null,
+        detailed_analysis: 'Browser AI analysis contract', calibrated: false,
+        scope: '语言模型仅提供文字练习建议；未校准，不代表音素准确率或能力等级。',
+        dimensions: { ai_feedback: { score: null, status: 'estimated', source: 'configured_llm', reason: '练习建议，非实测错误', evidence: {}, unit: null, calibrated: false } },
       };
     } else throw new Error(`Unexpected API request: ${url.pathname}`);
     try { await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(data) }); }
@@ -156,7 +166,9 @@ async function capture(page, section) {
       await pronunciation.getByRole('button', { name: /分析语音/ }).click();
       await page.getByText('Actual recognized words', { exact: true }).waitFor();
       await page.getByText('Repeat the sentence slowly', { exact: true }).waitFor();
-      assert.ok((await pronunciation.innerText()).includes('82'));
+      assert.ok((await pronunciation.innerText()).includes('暂不可评估'));
+      assert.ok((await pronunciation.innerText()).includes('文本序列匹配 75.0%'));
+      assert.equal(await pronunciation.locator('.score-circle, .confidence-score, .difficulty-level').count(), 0);
       assert.ok((await pronunciation.innerText()).includes('尚未校准'));
       await page.getByRole('button', { name: '对话练习', exact: true }).click();
       await page.getByText('Current chat response', { exact: true }).last().waitFor();

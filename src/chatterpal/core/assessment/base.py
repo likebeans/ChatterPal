@@ -8,6 +8,41 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any, List, Union, Tuple
 from dataclasses import dataclass, field
 import logging
+import math
+from numbers import Real
+from dataclasses import asdict
+
+
+def finite_number(value: Any, minimum: Optional[float] = None, maximum: Optional[float] = None) -> bool:
+    """Validate measurements without coercing strings, booleans or nonfinite values."""
+    return (
+        isinstance(value, Real)
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and (minimum is None or value >= minimum)
+        and (maximum is None or value <= maximum)
+    )
+
+
+def dimension_result(
+    score: Optional[float] = None,
+    *,
+    status: str = "unavailable",
+    source: str = "none",
+    reason: str,
+    evidence: Optional[Dict[str, Any]] = None,
+    unit: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Common additive metadata for measurements, estimates and unavailable scores."""
+    return {
+        "score": score if finite_number(score, 0, 100) else None,
+        "status": status,
+        "source": source,
+        "reason": reason,
+        "evidence": evidence or {},
+        "unit": unit,
+        "calibrated": False,
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +62,7 @@ class WordAnalysis:
     is_correct: bool
     phonetic_info: Dict[str, Any] = field(default_factory=dict)
     correction_tips: List[str] = field(default_factory=list)
-    confidence_score: float = 0.0
+    confidence_score: Optional[float] = None
 
 
 @dataclass
@@ -47,31 +82,32 @@ class PhonemeAnalysis:
 class ProsodyFeatures:
     """韵律特征数据"""
 
-    speaking_rate: float = 120.0  # 词/分钟
-    articulation_rate: float = 150.0  # 音节/分钟
-    f0_mean: float = 150.0  # 基频均值 (Hz)
-    f0_std: float = 25.0  # 基频标准差 (Hz)
-    f0_min: float = 100.0  # 基频最小值 (Hz)
-    f0_max: float = 200.0  # 基频最大值 (Hz)
-    pause_duration: float = 0.5  # 停顿时长 (秒)
-    words_per_minute: float = 120.0  # 每分钟单词数
-    vowel_accuracy: float = 0.7  # 元音准确性 (0-1)
-    formant_ratio: float = 0.8  # 共振峰比率
-    intonation_index: float = 0.7  # 语调指数 (0-1)
-    fluency_score: float = 0.7  # 流畅度评分 (0-1)
-    syllable_count: int = 5  # 音节数
-    pause_count: int = 1  # 停顿次数
+    # None means unmeasured; an unavailable feature must not resemble a sample.
+    speaking_rate: Optional[float] = None  # myprosody: syllables/second
+    articulation_rate: Optional[float] = None  # myprosody: syllables/voiced second
+    f0_mean: Optional[float] = None
+    f0_std: Optional[float] = None
+    f0_min: Optional[float] = None
+    f0_max: Optional[float] = None
+    pause_duration: Optional[float] = None
+    words_per_minute: Optional[float] = None
+    vowel_accuracy: Optional[float] = None
+    formant_ratio: Optional[float] = None
+    intonation_index: Optional[float] = None
+    fluency_score: Optional[float] = None
+    syllable_count: Optional[int] = None
+    pause_count: Optional[int] = None
 
 
 @dataclass
 class AssessmentResult:
     """发音评估结果"""
 
-    overall_score: float
-    fluency_score: float
-    pronunciation_score: float
-    prosody_score: float
-    accuracy_score: float
+    overall_score: Optional[float]
+    fluency_score: Optional[float]
+    pronunciation_score: Optional[float]
+    prosody_score: Optional[float]
+    accuracy_score: Optional[float]
 
     # 详细分析
     prosody_features: ProsodyFeatures
@@ -85,8 +121,12 @@ class AssessmentResult:
     # 元数据
     recognized_text: str = ""
     target_text: str = ""
-    audio_duration: float = 0.0
-    quality_score: float = 0.0
+    audio_duration: Optional[float] = None
+    quality_score: Optional[float] = None
+    dimensions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    feature_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    calibrated: bool = False
+    scope: str = "录音声学摘要和识别文本对齐；未校准，不代表音素准确率或语言能力。"
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典格式"""
@@ -98,17 +138,11 @@ class AssessmentResult:
                 "prosody": self.prosody_score,
                 "accuracy": self.accuracy_score,
             },
-            "prosody_features": {
-                "speaking_rate": self.prosody_features.speaking_rate,
-                "articulation_rate": self.prosody_features.articulation_rate,
-                "f0_mean": self.prosody_features.f0_mean,
-                "f0_std": self.prosody_features.f0_std,
-                "f0_min": self.prosody_features.f0_min,
-                "f0_max": self.prosody_features.f0_max,
-                "pause_duration": self.prosody_features.pause_duration,
-                "vowel_accuracy": self.prosody_features.vowel_accuracy,
-                "fluency_score": self.prosody_features.fluency_score,
-            },
+            "prosody_features": asdict(self.prosody_features),
+            "dimensions": self.dimensions,
+            "feature_metadata": self.feature_metadata,
+            "calibrated": self.calibrated,
+            "scope": self.scope,
             "word_analysis": [
                 {
                     "target_word": wa.target_word,
@@ -210,8 +244,21 @@ class AssessmentBase(ABC):
                 self.logger.error("Gradio音频数据格式错误")
                 return False
             sample_rate, audio_array = audio_data
-            if audio_array is None or len(audio_array) == 0:
-                self.logger.error("Gradio音频数组为空")
+            if not finite_number(sample_rate, 1) or sample_rate != int(sample_rate):
+                self.logger.error("音频采样率无效")
+                return False
+            try:
+                import numpy as np
+
+                samples = np.asarray(audio_array)
+                if (
+                    samples.ndim not in (1, 2) or samples.size == 0
+                    or samples.dtype.kind not in "iuf" or not np.isfinite(samples).all()
+                ):
+                    self.logger.error("音频样本为空或不是有限数值")
+                    return False
+            except (ImportError, TypeError, ValueError):
+                self.logger.error("无法验证音频样本")
                 return False
         else:
             self.logger.error(f"不支持的音频数据类型: {type(audio_data)}")
@@ -295,28 +342,12 @@ class AssessmentBase(ABC):
         Returns:
             相似度 (0-1)
         """
-        if not text1 and not text2:
+        from .alignment import align_text, words
+
+        if not words(text1) and not words(text2):
             return 1.0
-        if not text1 or not text2:
-            return 0.0
-
-        # 简单的单词级别相似度
-        import re
-
-        # 预处理文本
-        words1 = set(re.findall(r"\w+", text1.lower()))
-        words2 = set(re.findall(r"\w+", text2.lower()))
-
-        if not words1 and not words2:
-            return 1.0
-        if not words1 or not words2:
-            return 0.0
-
-        # Jaccard相似度
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-
-        return intersection / union if union > 0 else 0.0
+        alignment = align_text(text1, text2)
+        return alignment["score"] / 100 if alignment["score"] is not None else 0.0
 
     def estimate_audio_duration(self, audio_data: Union[bytes, str, Tuple]) -> float:
         """
@@ -361,14 +392,18 @@ class AssessmentBase(ABC):
             默认评估结果
         """
         return AssessmentResult(
-            overall_score=0.0,
-            fluency_score=0.0,
-            pronunciation_score=0.0,
-            prosody_score=0.0,
-            accuracy_score=0.0,
+            overall_score=None,
+            fluency_score=None,
+            pronunciation_score=None,
+            prosody_score=None,
+            accuracy_score=None,
             prosody_features=ProsodyFeatures(),
             feedback=error_message or "评估失败，请重试",
             suggestions=["请检查音频质量", "确保录音清晰", "重新录制音频"],
+            dimensions={
+                name: dimension_result(reason=error_message or "评估不可用")
+                for name in ("overall", "fluency", "pronunciation", "prosody", "accuracy", "quality")
+            },
         )
 
     def test_functionality(self) -> bool:
@@ -396,7 +431,10 @@ class AssessmentBase(ABC):
             result = self.assess(test_audio, "test")
 
             # 检查结果是否有效
-            return isinstance(result, AssessmentResult) and result.overall_score >= 0
+            return isinstance(result, AssessmentResult) and (
+                finite_number(result.overall_score, 0, 100)
+                or any(metadata.get("status") == "measured" for metadata in result.feature_metadata.values())
+            )
 
         except Exception as e:
             self.logger.error(f"功能测试失败: {e}")

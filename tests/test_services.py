@@ -56,7 +56,7 @@ def service_components(monkeypatch, tmp_path, setup_test_environment):
 
     def complete(**kwargs):
         content = kwargs["messages"][-1]["content"]
-        if "pronunciation teacher" in content or "Assess the fluency" in content:
+        if "machine transcript" in content:
             response = json.dumps({
                 "overall_score": 85,
                 "pronunciation_score": 90,
@@ -333,7 +333,8 @@ class TestEvaluationService:
             self.components.audio_bytes, target_text
         )
         assert isinstance(result, AssessmentResult)
-        assert result.overall_score >= 0
+        assert result.overall_score is None
+        assert result.dimensions['overall']['status'] == 'unavailable'
         assert result.recognized_text == "Hello, how are you today"
         assert result.target_text == target_text
         assert "Good pronunciation overall" in result.feedback
@@ -344,7 +345,8 @@ class TestEvaluationService:
             self.components.audio_bytes
         )
         assert isinstance(result, AssessmentResult)
-        assert result.overall_score >= 0
+        assert result.overall_score is None
+        assert result.dimensions['overall']['status'] == 'unavailable'
         assert result.target_text == ""
 
     def test_evaluate_pronunciation_gradio_audio(self):
@@ -362,7 +364,8 @@ class TestEvaluationService:
         feedback = self.evaluation_service._generate_default_feedback(scores, 0.9)
         assert isinstance(feedback, str)
         assert len(feedback) > 0
-        assert "很好" in feedback
+        assert "暂不可评估" in feedback
+        assert "未校准" in feedback
 
     def test_calculate_text_similarity(self):
         score = self.evaluation_service._calculate_similarity("Hello world", "Hello world")
@@ -399,7 +402,10 @@ class TestCorrectionService:
             self.components.audio_bytes, "Hello, how are you today"
         )
         assert isinstance(result, CorrectionReport)
-        assert result.overall_score >= 0
+        assert result.overall_score is None
+        assert result.dimensions["overall"]["status"] == "unavailable"
+        assert result.dimensions["accuracy"]["score"] == 100
+        assert result.dimensions["accuracy"]["source"] == "text_sequence_alignment"
         assert isinstance(result.pronunciation_errors, list)
         assert isinstance(result.improvement_suggestions, list)
 
@@ -478,7 +484,8 @@ class TestServiceIntegration:
         assert isinstance(result, AssessmentResult)
         correction = self.correction_service.comprehensive_correction(user_audio, "Practice sentence")
         assert isinstance(correction, CorrectionReport)
-        feedback_text = f"Your pronunciation score: {result.overall_score:.2f}"
+        assert result.overall_score is None
+        feedback_text = 'My pronunciation score is unavailable; help me practice.'
         feedback_result = self.chat_service.chat_with_text(feedback_text, chat_result[1])
         assert len(feedback_result) == 2
         assert feedback_result == (f"Response to: {feedback_text}", chat_result[1])

@@ -19,6 +19,7 @@ from ...learning.contracts import (
     TurnRequest,
 )
 from ...learning.runtime import LearningRuntime
+from ...learning.presentation import public_learning_result
 from ...learning.service import LearningService
 from ...learning.storage import StoreError
 
@@ -105,6 +106,9 @@ def mount_learning_tasks(app, settings, provider):
 
     app.router.lifespan_context = lifespan
     app.state.learning_service = service
+    app.state.learning_runtime_snapshot = lambda: (
+        service().runtime.snapshot() if cached_service.cache_info().currsize else None
+    )
 
     @router.get("/tasks")
     def tasks(owner=Depends(identity)):
@@ -116,7 +120,7 @@ def mount_learning_tasks(app, settings, provider):
 
     @router.post("/sessions", status_code=202)
     def start(body: StartSession, owner=Depends(identity)):
-        return service().start(owner, body)
+        return public_learning_result(service().start(owner, body))
 
     @router.post("/sessions/{session_id}/turns", status_code=202)
     async def turn(session_id: str, request: Request, owner=Depends(identity)):
@@ -125,21 +129,23 @@ def mount_learning_tasks(app, settings, provider):
         )
 
         def submit():
-            return service().turn(owner, session_id, body, audio)
+            return public_learning_result(
+                service().turn(owner, session_id, body, audio)
+            )
 
         return await asyncio.to_thread(submit)
 
     @router.post("/sessions/{session_id}/hints", status_code=202)
     def hint(session_id: str, body: HintRequest, owner=Depends(identity)):
-        return service().hint(owner, session_id, body)
+        return public_learning_result(service().hint(owner, session_id, body))
 
     @router.post("/sessions/{session_id}/finish", status_code=202)
     def finish(session_id: str, body: SessionWrite, owner=Depends(identity)):
-        return service().finish(owner, session_id, body)
+        return public_learning_result(service().finish(owner, session_id, body))
 
     @router.post("/sessions/{session_id}/feedback", status_code=202)
     def feedback(session_id: str, body: SessionWrite, owner=Depends(identity)):
-        return service().feedback(owner, session_id, body)
+        return public_learning_result(service().feedback(owner, session_id, body))
 
     @router.post("/attempts", status_code=202)
     async def attempt(request: Request, owner=Depends(identity)):
@@ -148,7 +154,7 @@ def mount_learning_tasks(app, settings, provider):
         )
 
         def submit():
-            return service().attempt(owner, body, audio)
+            return public_learning_result(service().attempt(owner, body, audio))
 
         return await asyncio.to_thread(submit)
 
@@ -159,15 +165,5 @@ def mount_learning_tasks(app, settings, provider):
     @router.post("/attempts/{attempt_id}/example-audio", status_code=202)
     def example(attempt_id: str, body: OperationRequest, owner=Depends(identity)):
         return service().example(owner, attempt_id, body.request_id)
-
-    @router.get("/progress")
-    def progress(owner=Depends(identity)):
-        return service().progress(owner)
-
-    @router.get("/reviews/due")
-    def reviews(owner=Depends(identity)):
-        raise StoreError(
-            "review_unavailable", "次日复习尚未接入。本次任务与重练记录已保存。", 503
-        )
 
     app.include_router(router)

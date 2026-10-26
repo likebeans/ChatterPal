@@ -75,20 +75,26 @@ def test_analysis_http_returns_transcript_and_keeps_existing_fields(
             assert response.status_code == 200, response.text
             result = response.json()
             assert result["recognized_text"] == "I said these words"
-            assert result["overall_score"] == 75.0
+            assert result["overall_score"] is None
+            assert result["calibrated"] is False
+            assert result["scope"]
+            assert result["dimensions"]["pronunciation"]["status"] == "unavailable"
+            assert result["dimensions"]["overall"]["score"] is None
+            assert result["dimensions"]["accuracy"]["source"] == "text_sequence_alignment"
             if route == "analyze":
                 assert set(result) == {
                     "recognized_text",
                     "overall_score",
                     "corrections",
                     "suggestions",
+                    "dimensions", "scope", "calibrated",
                 }
                 assert any(item["corrected"] for item in result["corrections"])
             else:
-                assert result["difficulty_level"] == "intermediate"
+                assert result["difficulty_level"] is None
                 assert "AI" in result["detailed_analysis"]
                 assert "基础分析" in result["detailed_analysis"]
-                assert result["confidence_score"] == 0.0
+                assert result["confidence_score"] is None
                 if result["next_scenario"]:
                     scenario, difficulty = result["next_scenario"].rsplit("-", 1)
                     context = await client.get(
@@ -150,7 +156,7 @@ def test_unavailable_scenario_has_an_explanatory_response(
     asyncio.run(request())
 
 
-def test_successful_ai_http_maps_feedback_and_a_usable_next_scenario(analysis_api):
+def test_successful_ai_http_maps_advice_without_unsupported_grading_or_progression(analysis_api):
     prompts = []
 
     def generate(prompt):
@@ -199,11 +205,13 @@ def test_successful_ai_http_maps_feedback_and_a_usable_next_scenario(analysis_ap
             assert data["recognized_text"] == "I said these words"
             assert data["grammar_corrections"][0]["type"] == "tense"
             assert data["pronunciation_feedback"][0]["explanation"] == "Check the sound"
-            assert data["next_scenario"] == "daily_conversation-intermediate"
-            scenario, difficulty = data["next_scenario"].rsplit("-", 1)
-            assert (
-                await client.get(f"/api/scenarios/{scenario}/{difficulty}")
-            ).status_code == 200
+            assert data["next_scenario"] is None
+            assert data["overall_score"] is None
+            assert data["difficulty_level"] is None
+            assert data["confidence_score"] is None
+            assert data["dimensions"]["ai_grammar"]["status"] == "estimated"
+            assert data["dimensions"]["ai_feedback"]["status"] == "estimated"
+            assert "未校准" in data["scope"]
 
     asyncio.run(request())
     assert len(prompts) == 2

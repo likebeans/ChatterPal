@@ -1,12 +1,25 @@
-# -*- coding: utf-8 -*-
-"""
-业务服务层
-提供高层业务逻辑服务，整合核心模块功能
-"""
+"""Business services, imported only when the requested service is used."""
 
-from .chat import ChatService
-from .evaluation import EvaluationService
-from .correction import CorrectionService
-from .topic_generator import TopicGenerator, TopicGenerationError
+from importlib import import_module
 
-__all__ = ["ChatService", "EvaluationService", "CorrectionService", "TopicGenerator", "TopicGenerationError"]
+_EXPORTS = {
+    "ChatService": ".chat",
+    "EvaluationService": ".evaluation",
+    "CorrectionService": ".correction",
+    "TopicGenerator": ".topic_generator",
+    "TopicGenerationError": ".topic_generator",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

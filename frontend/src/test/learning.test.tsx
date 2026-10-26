@@ -187,9 +187,10 @@ describe('learning workflow', () => {
 
   it('keeps review answers hidden until the server records reveal', async () => {
     const api = mockLearningApi()
-    vi.mocked(api.reviews).mockResolvedValue([{ review_item_id: 'review-1', session_id: 'session-1', focus_id: 'past-tense', prompt: 'Tell me about your last trip.', due_at: '2026-10-24T08:00:00Z' }])
+    const review = { review_item_id: 'review-1', session_id: 'session-1', focus_id: 'past-tense', prompt: 'Tell me about your last trip.', question_id: 'trip', prompt_available: true, due_at: '2026-10-24T08:00:00Z', revision: 1, cycle: 0, used_hint: false, revealed_answer: false, independent_variant_available: true, availability_reason: '' }
+    vi.mocked(api.reviews).mockResolvedValue([review])
     vi.mocked(api.mutate).mockImplementation(async (_path, _payload, requestId) => ({ ...operation(), request_id: requestId,
-      result_type: 'review', result: { review_item_id: 'review-1', answer: 'I went to the mountains.' } }))
+      result_type: 'review_reveal', result: { ...review, revision: 2, used_hint: true, revealed_answer: true, answer: 'I went to the mountains.' } }))
     render(<LearningWorkspace active api={api} />)
     await screen.findByRole('button', { name: '开始描述周末' })
     fireEvent.click(screen.getByRole('button', { name: '到期复习（1）' }))

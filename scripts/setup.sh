@@ -11,4 +11,5 @@ if ! command -v uv &> /dev/null; then
 fi
 
 # 运行设置脚本
-uv run python scripts/setup.py "$@"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+uv run --no-sync --project "$SCRIPT_DIR/.." python "$SCRIPT_DIR/setup.py" "$@"

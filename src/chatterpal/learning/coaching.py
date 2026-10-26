@@ -50,6 +50,7 @@ def build_coach_messages(session: TaskSession, text: str) -> list[dict[str, str]
     """Keep raw learner input in user messages and authored rules in system content."""
     _require_active_text(session, text)
     task = session.task.to_snapshot()
+    task.pop("transfer_questions", None)
     used_hints = [
         {
             "kind": hint.kind,

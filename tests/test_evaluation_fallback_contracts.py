@@ -32,8 +32,10 @@ def test_basic_evaluation_keeps_real_assessment_when_llm_is_disabled(spoken_audi
     ).evaluate_pronunciation(spoken_audio, "we practice clearly", detailed_analysis=False)
     assert result.recognized_text == "we practice clearly"
     assert result.audio_duration == pytest.approx(1.0)
-    assert result.pronunciation_score == 70.0
-    assert result.prosody_score == 75.0
+    assert result.pronunciation_score is None
+    assert result.prosody_score is None
+    assert result.dimensions['accuracy']['score'] == 100
+    assert result.feature_metadata['f0_mean']['source'] == 'parselmouth'
     assert "尚未校准" in result.feedback
     assert result.prosody_features.f0_mean == pytest.approx(180.0, abs=1.0)
     provider.recognize_gradio_audio.assert_called_once_with(spoken_audio)
@@ -46,7 +48,8 @@ def test_provider_timeout_keeps_base_assessment_and_transcript(spoken_audio):
         asr=recognition_provider(), llm=llm, assessment=PronunciationCorrector()
     ).evaluate_pronunciation(spoken_audio, "we practice clearly")
     assert result.recognized_text == "we practice clearly"
-    assert result.fluency_score == 80
+    assert result.fluency_score is None
+    assert result.dimensions['ai_feedback']['status'] == 'unavailable'
     assert "尚未校准" in result.feedback
     assert result.suggestions
     llm.chat.assert_called_once()
@@ -63,16 +66,21 @@ def test_assessment_failure_does_not_discard_available_llm_response(spoken_audio
     result = EvaluationService(
         asr=recognition_provider(), llm=llm, assessment=unavailable
     ).evaluate_pronunciation(spoken_audio, "we practice")
-    assert result.pronunciation_score == 83
-    assert result.fluency_score == 76
-    assert result.accuracy_score == 90
-    assert result.feedback == llm_result["feedback"]
+    assert result.pronunciation_score is None
+    assert result.fluency_score is None
+    assert result.accuracy_score == pytest.approx(50.0)
+    assert result.dimensions['accuracy']['source'] == 'text_sequence_alignment'
+    assert result.dimensions['ai_feedback']['status'] == 'estimated'
+    assert llm_result["feedback"] in result.feedback
     assert result.suggestions == llm_result["suggestions"]
-    assert [word.is_correct for word in result.word_analysis] == [True, True]
-    unavailable.assess.assert_called_once_with(spoken_audio, "we practice")
+    assert [word.is_correct for word in result.word_analysis] == [True, True, False]
+    assert result.word_analysis[-1].target_word == ''
+    assert result.word_analysis[-1].recognized_word == 'clearly'
+    assert all(word.confidence_score is None for word in result.word_analysis)
+    unavailable.assess.assert_called_once_with(spoken_audio, "we practice", recognized_text='we practice clearly')
 
 
-def test_non_json_feedback_preserves_response_and_extracts_practice_advice(spoken_audio):
+def test_non_json_feedback_keeps_base_feedback_and_unavailable_ai_status(spoken_audio):
     response = "Overall: 82. Try reading slowly. Practice the final word!"
     llm = SimpleNamespace(chat=Mock(return_value=response))
     result = EvaluationService(
@@ -80,11 +88,13 @@ def test_non_json_feedback_preserves_response_and_extracts_practice_advice(spoke
     ).evaluate_free_speech(spoken_audio)
     assert result.recognized_text == "we practice clearly"
     assert result.target_text == ""
-    assert result.feedback == response
-    assert set(result.suggestions) == {"Try reading slowly.", "Practice the final word!"}
+    assert response not in result.feedback
+    assert result.dimensions['ai_feedback']['status'] == 'unavailable'
+    assert result.overall_score is result.accuracy_score is None
+    assert result.suggestions
     prompt = llm.chat.call_args.args[0]
-    assert "Word count: 3" in prompt
-    assert "Speaking rate: 180.0 words/minute" in prompt
+    assert 'Recognized Text: "we practice clearly"' in prompt
+    assert 'You have not heard the recording' in prompt
 
 
 @pytest.mark.parametrize("outcome", ["", RuntimeError("recognizer unavailable")])
@@ -112,10 +122,11 @@ def test_default_feedback_identifies_substitution_and_omission(spoken_audio):
     assert result.recognized_text == "we learn"
     words = result.word_analysis
     assert [word.target_word for word in words] == ["we", "practice", "clearly"]
-    assert [word.recognized_word for word in words] == ["we", "learn", ""]
+    assert [word.recognized_word for word in words] == ["we", "", "learn"]
     assert [word.is_correct for word in words] == [True, False, False]
-    assert "learn" in words[1].correction_tips[0]
-    assert "遗漏" in words[2].correction_tips[0]
+    assert '识别文本差异' in words[1].correction_tips[0]
+    assert 'learn' in words[2].correction_tips[0]
+    assert all(word.confidence_score is None for word in words)
     assert "准确性" in result.feedback
     assert "流畅度" in result.feedback
     assert result.suggestions
@@ -133,11 +144,12 @@ def test_comparison_reports_direction_and_serialized_results(
     comparison = EvaluationService(asr=recognition_provider(), llm=llm).compare_pronunciations(
         spoken_audio, spoken_audio, "we practice clearly"
     )
-    assert comparison["comparison"]["better_audio"] == better
-    assert comparison["comparison"]["score_difference"] > 0
-    assert len(comparison["comparison"][change]) == 2
-    assert comparison["audio1_result"]["feedback"] == "Analysis 70"
-    assert comparison["audio2_result"]["feedback"] == f"Analysis {second_score}"
+    assert comparison["comparison"]["better_audio"] is None
+    assert comparison["comparison"]["score_difference"] is None
+    assert comparison["comparison"]["status"] == 'unavailable'
+    assert comparison["comparison"][change] == []
+    assert 'Analysis 70' in comparison["audio1_result"]["feedback"]
+    assert f'Analysis {second_score}' in comparison["audio2_result"]["feedback"]
     assert llm.chat.call_count == 2
 
 
@@ -163,3 +175,42 @@ def test_service_status_distinguishes_missing_and_failed_modules():
     assert missing["llm_available"] is False
     assert missing["assessment_available"] is False
     assert "asr_status" not in missing
+
+
+@pytest.mark.parametrize('payload', [
+    'Overall 99. Your pronunciation is excellent.',
+    '[]',
+    '{"feedback": "Advice", "feedback": "Other"}',
+    '{"feedback": "Advice", "overall_score": NaN}',
+    '{"feedback": "Advice", "overall_score": 1e999}',
+    '{"feedback": "Advice", "overall_score": true}',
+    '{"feedback": "Advice", "suggestions": "Read slowly"}',
+    '{"feedback": {"text": "Advice"}, "suggestions": []}',
+    '{"feedback": "Advice", "errors": [{"word": 1}]}',
+])
+def test_invalid_evaluation_output_keeps_text_metric_and_marks_ai_unavailable(spoken_audio, payload):
+    llm = SimpleNamespace(chat=Mock(return_value=payload))
+    result = EvaluationService(asr=recognition_provider(), llm=llm).evaluate_pronunciation(
+        spoken_audio, 'we practice clearly',
+    )
+    assert result.recognized_text == 'we practice clearly'
+    assert result.overall_score is result.pronunciation_score is result.fluency_score is None
+    assert result.accuracy_score == 100
+    assert result.dimensions['ai_feedback']['status'] == 'unavailable'
+    assert result.dimensions['accuracy']['source'] == 'text_sequence_alignment'
+    json.dumps(result.to_dict(), allow_nan=False)
+
+
+def test_valid_text_only_evaluation_advice_has_source_and_preserves_unmeasured_features(spoken_audio):
+    llm = SimpleNamespace(chat=Mock(return_value=json.dumps({
+        'feedback': 'Use the past tense to describe yesterday.',
+        'suggestions': ['Try I practiced yesterday.'],
+    })))
+    result = EvaluationService(asr=recognition_provider(), llm=llm).evaluate_free_speech(spoken_audio)
+    assert result.dimensions['ai_feedback']['status'] == 'estimated'
+    assert result.dimensions['ai_feedback']['source'] == 'configured_llm'
+    assert result.overall_score is result.quality_score is result.accuracy_score is None
+    assert result.audio_duration == 1
+    assert all(value is None for value in vars(result.prosody_features).values())
+    assert 'Use the past tense' in result.feedback
+    json.dumps(result.to_dict(), allow_nan=False)

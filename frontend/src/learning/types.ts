@@ -127,21 +127,46 @@ export interface LearningSessionSummary {
 export interface LearningReview {
   review_item_id: string
   session_id: string
-  focus_id: string
-  prompt: string
+  focus_id: string | null
+  prompt: string | null
+  question_id: string | null
+  prompt_available: boolean
   due_at: string
+  revision: number
+  cycle: number
+  independent_variant_available: boolean
+  availability_reason: string
+  attempts?: LearningReviewAttempt[]
+  used_hint: boolean
+  revealed_answer: boolean
 }
 
-export interface ReviewReveal {
-  review_item_id: string
+export interface ReviewReveal extends LearningReview {
   answer: string
+  answer_context?: string
+}
+
+export interface ReviewHint extends LearningReview { hint: string }
+export type ReviewEvidenceKind = 'shown_answer' | 'hinted' | 'early_practice' | 'source_repeat' | 'repeated_prompt' | 'delayed_transfer'
+export interface LearningReviewAttempt extends LearningAttempt {
+  review_item_id: string
+  question_id: string
+  prompt: string
+  used_hint: boolean
+  revealed_answer: boolean
+  independent: boolean
+  delayed: boolean
+  schedule_advanced: boolean
+  variant_consumed: boolean
+  evidence_kind: ReviewEvidenceKind
 }
 
 export interface ReviewResult {
   review_item_id: string
-  attempt: LearningAttempt
-  next_due_at: string | null
+  attempt: LearningReviewAttempt
+  next_due_at: string
   used_hint: boolean
+  review: LearningReview
 }
 
 export interface LearningProgress {
@@ -150,12 +175,26 @@ export interface LearningProgress {
   retries_count: number
   reviews_completed: number
   independent_transfer_count: number
+  review_attempts_count?: number
+  early_practice_count?: number
+  source_repeat_count?: number
+  hinted_review_count?: number
+  repeated_prompt_count?: number
+  unassessed_reviews_count?: number
   evidence: Array<{
     attempt_id: string
     session_id: string
     description: string
     kind: 'same_task' | 'transfer' | 'practice'
     status: Availability
+    review_item_id?: string
+    evidence_kind?: ReviewEvidenceKind
+    used_hint?: boolean
+    revealed_answer?: boolean
+    independent?: boolean
+    delayed?: boolean
+    schedule_advanced?: boolean
+    result?: LearningEvaluation['result']
   }>
 }
 
@@ -188,13 +227,14 @@ export interface AttemptInput {
   submission: LearningSubmission
 }
 
-export type LearningAction = 'start' | 'turn' | 'hint' | 'finish' | 'feedback' | 'attempt' | 'example' | 'save-review' | 'review' | 'reveal' | 'profile' | 'delete'
+export type LearningAction = 'start' | 'turn' | 'hint' | 'finish' | 'feedback' | 'attempt' | 'example' | 'save-review' | 'review' | 'reveal' | 'review-hint' | 'defer-review' | 'profile' | 'delete'
 
 export interface LearningPending {
   request_id: string
   operation_id?: string
   action: LearningAction
   session_id?: string | null
+  review_item_id?: string
   learner_id: string
   draft_key?: string
   draft_version?: number

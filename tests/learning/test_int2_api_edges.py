@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from chatterpal.config.settings import Settings
+from chatterpal.learning.presentation import public_learning_result
 from chatterpal.web import api_server
 from tests.int2_support import FixtureASR, FixtureLLM, FixtureTTS
 
@@ -695,7 +696,10 @@ async def test_deleting_source_during_provider_work_prevents_late_children_and_a
             assert response.status_code == 404, (path, response.text)
         archive = (await client.get(f"{PREFIX}/export")).json()
         assert len(archive["records"]) == 1
-        assert archive["records"][0]["data"] == survivor
+        archived_session = archive["records"][0]["data"]
+        assert archived_session["domain"]["task"]["transfer_questions"]
+        assert "transfer_questions" not in survivor["domain"]["task"]
+        assert public_learning_result(archived_session) == survivor
         assert len(archive["operations"]) == 1
         assert archive["operations"][0]["request_id"] == "after-source-deletion-start"
 

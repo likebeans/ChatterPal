@@ -2,6 +2,10 @@ x-python-service: &python-service
   build:
     context: .
     dockerfile: Dockerfile
+    args:
+      # Set CHATTERPAL_EXTRAS="api cloud" with cloud providers configured to omit
+      # local models, assessment, Gradio and microphone dependencies.
+      CHATTERPAL_EXTRAS: ${CHATTERPAL_EXTRAS:-full}
   image: chatterpal-backend:local
   env_file:
     - ${CHATTERPAL_ENV_FILE:-.env}
@@ -57,7 +61,7 @@ services:
   gradio:
     <<: *python-service
     profiles: ["gradio"]
-    command: ["python", "-m", "chatterpal.web.app"]
+    command: ["chatterpal-run", "--mode", "web"]
     environment:
       <<: *python-environment
       GRADIO_PORT: "7860"

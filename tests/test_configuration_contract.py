@@ -192,6 +192,31 @@ def test_cosyvoice_rates_accept_fractional_multipliers(field):
             Settings(_env_file=None, **{field: invalid})
 
 
+def test_openai_timeout_flows_from_environment_to_http_request(
+    isolated_config, monkeypatch
+):
+    import chatterpal.core.llm.openai as openai_module
+
+    monkeypatch.setenv("OPENAI_TIMEOUT", "60")
+    settings = Settings(
+        _env_file=None, llm_provider="openai", openai_api_key="offline-test-key"
+    )
+    assert settings.openai_timeout == 60
+    llm = create_llm(settings)
+    response = patch.object(openai_module.requests, "post")
+    with response as post:
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "reply"}}]
+        }
+        assert llm.chat("hello") == "reply"
+        assert post.call_args.kwargs["timeout"] == 60
+    monkeypatch.delenv("OPENAI_TIMEOUT")
+    assert Settings(_env_file=None).openai_timeout == 30
+    for invalid in (0, -1, 301):
+        with pytest.raises(ValueError):
+            Settings(_env_file=None, openai_timeout=invalid)
+
+
 def test_real_alibaba_llm_receives_all_documented_options(isolated_config, monkeypatch):
     import chatterpal.core.llm.alibaba as alibaba_module
 

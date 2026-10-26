@@ -5,9 +5,18 @@
 """
 
 from .base import AssessmentBase, AssessmentError, AssessmentResult
-from .prosody import ProsodyAnalyzer
-from .phoneme import PhonemeAnalyzer
-from .corrector import PronunciationCorrector
+
+
+def __getattr__(name):
+    """Load optional acoustic implementations only when requested."""
+    from importlib import import_module
+
+    modules = {"ProsodyAnalyzer": ".prosody", "PhonemeAnalyzer": ".phoneme", "PronunciationCorrector": ".corrector"}
+    if name not in modules:
+        raise AttributeError(name)
+    value = getattr(import_module(modules[name], __name__), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "AssessmentBase",

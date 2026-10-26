@@ -94,6 +94,16 @@ def feedback_payload(session, *, focuses=True):
     }
 
 
+def test_session_feedback_prompt_excludes_reserved_review_questions(session):
+    provider = Provider(feedback_payload(session))
+    assert generate_feedback(provider, session, 5).status == "available"
+    instruction = provider.calls[0][0]["content"]
+    assert "transfer_questions" not in instruction
+    for question in session.task.transfer_questions:
+        assert question.prompt not in instruction
+        assert question.question_id not in instruction
+
+
 def test_existing_providers_reuse_one_call_and_preserve_exact_text_and_audio():
     asr = SimpleNamespace(recognize=Mock(return_value="  I went hiking.\n"))
     llm = SimpleNamespace(chat=Mock(return_value='  {"reply":"Who with?"}\n'))

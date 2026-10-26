@@ -294,6 +294,7 @@ def create_llm(settings: Optional[Settings] = None):
             {
                 "api_key": settings.openai_api_key,
                 "model": settings.openai_model,
+                "timeout": settings.openai_timeout,
                 "base_url": settings.openai_base_url or "https://api.openai.com/v1/chat/completions",
             }
         )

@@ -1,4 +1,4 @@
-import type { LearningAttempt, LearningAudio, LearningBootstrap, LearningCoaching, LearningFeedback, LearningFocus, LearningHint, LearningOperation, LearningProfile, LearningProgress, LearningReview, LearningSession, LearningTask, LearningTextSuggestion, LearningTurn, ReviewResult } from './types'
+import type { LearningAttempt, LearningAudio, LearningBootstrap, LearningCoaching, LearningFeedback, LearningFocus, LearningHint, LearningOperation, LearningProfile, LearningProgress, LearningReview, LearningReviewAttempt, LearningSession, LearningTask, LearningTextSuggestion, LearningTurn, ReviewHint, ReviewResult, ReviewReveal } from './types'
 
 type ObjectValue = Record<string, unknown>
 export function isObject(value: unknown): value is ObjectValue { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -75,20 +75,47 @@ export function isOperation(value: unknown): value is LearningOperation {
   if (value.result_type === 'hint') return isHint(value.result)
   if (value.result_type === 'attempt') return isAttempt(value.result)
   if (value.result_type === 'audio') return isAudio(value.result)
+  if (value.result_type === 'review_saved' || value.result_type === 'review_deferred') return isReview(value.result)
+  if (value.result_type === 'review_reveal') return isReviewReveal(value.result)
+  if (value.result_type === 'review_hint') return isReviewHint(value.result)
+  if (value.result_type === 'review') return isReviewResult(value.result)
   return true
 }
 export function isBootstrap(value: unknown): value is LearningBootstrap {
   return isObject(value) && text(value.learner_id) && isProfile(value.profile) && array(value.pending_operations, isOperation)
 }
 export function isReview(value: unknown): value is LearningReview {
-  return isObject(value) && ['review_item_id', 'session_id', 'focus_id', 'prompt', 'due_at'].every(key => text(value[key]))
+  return isObject(value) && ['review_item_id', 'session_id', 'due_at', 'availability_reason'].every(key => text(value[key]))
+    && nullableText(value.focus_id) && revision(value.revision) && Number.isInteger(value.cycle) && number(value.cycle)
+    && typeof value.prompt_available === 'boolean' && typeof value.independent_variant_available === 'boolean'
+    && typeof value.used_hint === 'boolean' && typeof value.revealed_answer === 'boolean'
+    && (value.prompt_available ? text(value.prompt) && Boolean(value.prompt.trim()) && text(value.question_id) : value.prompt === null && value.question_id === null)
+    && (!value.revealed_answer || value.used_hint)
+    && (value.attempts === undefined || array(value.attempts, isReviewAttempt))
+}
+export function isReviewReveal(value: unknown): value is ReviewReveal {
+  return isReview(value) && isObject(value) && text(value.answer) && value.used_hint && value.revealed_answer
+}
+export function isReviewHint(value: unknown): value is ReviewHint {
+  return isReview(value) && isObject(value) && text(value.hint) && value.used_hint
+}
+export function isReviewAttempt(value: unknown): value is LearningReviewAttempt {
+  return isAttempt(value) && isObject(value) && ['review_item_id', 'question_id', 'prompt'].every(key => text(value[key]))
+    && ['used_hint', 'revealed_answer', 'independent', 'delayed', 'schedule_advanced', 'variant_consumed'].every(key => typeof value[key] === 'boolean')
+    && choice(value.evidence_kind, ['shown_answer', 'hinted', 'early_practice', 'source_repeat', 'repeated_prompt', 'delayed_transfer'])
+    && (!value.revealed_answer || value.used_hint === true)
+    && (!value.independent || value.delayed === true && !value.used_hint && value.evidence_kind === 'delayed_transfer')
+    && (!value.schedule_advanced || value.independent === true && value.evaluation.status === 'available' && value.evaluation.result === 'met')
 }
 export function isReviewResult(value: unknown): value is ReviewResult {
-  return isObject(value) && text(value.review_item_id) && isAttempt(value.attempt)
-    && nullableText(value.next_due_at) && typeof value.used_hint === 'boolean'
+  return isObject(value) && text(value.review_item_id) && isReviewAttempt(value.attempt)
+    && text(value.next_due_at) && typeof value.used_hint === 'boolean' && isReview(value.review)
+    && value.review.review_item_id === value.review_item_id && value.attempt.review_item_id === value.review_item_id
+    && value.used_hint === value.attempt.used_hint && value.review.due_at === value.next_due_at
 }
 export function isProgress(value: unknown): value is LearningProgress {
   return isObject(value) && ['sessions_completed', 'attempts_count', 'retries_count', 'reviews_completed', 'independent_transfer_count'].every(key => number(value[key]))
+    && ['review_attempts_count', 'early_practice_count', 'source_repeat_count', 'hinted_review_count', 'repeated_prompt_count', 'unassessed_reviews_count'].every(key => value[key] === undefined || number(value[key]))
     && Array.isArray(value.evidence) && value.evidence.every(item => isObject(item) && text(item.attempt_id) && text(item.session_id) && text(item.description)
       && choice(item.kind, ['same_task', 'transfer', 'practice']) && available(item.status))
 }

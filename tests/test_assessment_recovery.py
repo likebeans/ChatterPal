@@ -12,13 +12,15 @@ def test_corrector_serializes_measured_recording_summary_without_phoneme_claims(
 ):
     result = PronunciationCorrector().assess(temp_audio_file, "hello world")
 
-    assert result.overall_score == 75.0
+    assert result.overall_score is None
     assert (
         result.fluency_score,
         result.pronunciation_score,
         result.prosody_score,
         result.accuracy_score,
-    ) == (80.0, 70.0, 75.0, 80.0)
+    ) == (None, None, None, None)
+    assert result.dimensions["overall"]["status"] == "unavailable"
+    assert result.feature_metadata["f0_mean"]["source"] == "parselmouth"
     assert result.audio_duration == pytest.approx(1.0)
     assert result.prosody_features.f0_mean == pytest.approx(440.0, abs=2.0)
     assert result.recognized_text == ""
@@ -33,7 +35,7 @@ def test_corrector_serializes_measured_recording_summary_without_phoneme_claims(
     assert "未进行音素对齐" in summary.description
     assert "440" in summary.description
     assert "未校准" in result.feedback
-    assert "演示" in result.feedback
+    assert "暂不提供综合或发音分数" in result.feedback
     assert result.to_dict()["phoneme_analysis"][0]["description"] == summary.description
 
 
@@ -70,7 +72,9 @@ def test_unvoiced_recording_does_not_label_default_pitch_as_measured():
     assert analysis["analysis_success"] is True
     assert analysis["analysis_status"] == "partial"
     assert analysis["pitch"]["available"] is False
-    assert analysis["pitch"]["source"] == "unavailable_legacy_default"
+    assert analysis["pitch"]["source"] == "unavailable"
+    assert analysis["pitch"]["mean"] is None
+    assert analysis["quality_score"] is None
     assert analysis["spectral"]["available"] is False
     result = PronunciationCorrector().assess(audio, phoneme_analysis=analysis)
     assert "基频不可用" in result.phoneme_analysis[0].description

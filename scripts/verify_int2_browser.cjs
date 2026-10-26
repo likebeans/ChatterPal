@@ -169,8 +169,8 @@ async function stop(child) {
     await page.screenshot({ path: path.join(output, 'weekend-retries-mobile.png'), fullPage: true, animations: 'disabled' });
     await fs.writeFile(path.join(output, 'mobile-layout.json'), JSON.stringify(mobileLayout, null, 2));
     await page.getByRole('button', { name: '到期复习', exact: true }).click();
-    await page.getByText(/复习功能尚未接入。已保存的原句和重练可以从学习记录查看/).last().waitFor();
-    assert.equal(await page.getByRole('button', { name: '保存到次日复习', exact: true }).count(), 0);
+    await page.getByText('当前没有到期复习。可以从练后反馈或已保存的尝试安排次日复习。', { exact: true }).waitFor();
+    assert.equal((await context.request.get(`${uiUrl}/api/learning/reviews/due`)).status(), 200);
     assert.deepEqual(errors, []);
     const summary = { output, passed: true, session_id: before.session_id, user_turns: 3, attempts: 3, linked_retries: 2, browser_reload: true, api_restart: true, hint_preserved_draft: true, history_preserved_draft: true, mobile_overflow: false, errors, requests };
     await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(summary, null, 2));

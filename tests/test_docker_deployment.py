@@ -29,6 +29,17 @@ class TestDockerDeployment(unittest.TestCase):
             with self.subTest(path=relative_path):
                 self.assertTrue((PROJECT_ROOT / relative_path).is_file())
 
+    def test_runtime_uses_installed_wheel_commands(self):
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text()
+        runtime = dockerfile.split(" AS runtime", 1)[1]
+        self.assertIn('CMD ["chatterpal-run", "--mode", "api"]', runtime)
+        self.assertNotIn("COPY src", runtime)
+        self.assertNotIn("COPY scripts", runtime)
+        self.assertIn("--no-dev", dockerfile)
+        self.assertIn("--no-editable", dockerfile)
+        self.assertIn("CHATTERPAL_EXTRAS", dockerfile)
+        self.assertIn("**/node_modules.*", (PROJECT_ROOT / ".dockerignore").read_text())
+
     def test_frontend_requests_use_same_origin(self):
         # An absolute localhost URL targets the visitor's computer after deploy.
         requests = []
@@ -119,6 +130,9 @@ class TestDockerDeployment(unittest.TestCase):
         mounts = {mount["target"] for mount in services["backend"]["volumes"]}
         self.assertTrue({"/app/.cache", "/app/data", "/app/temp_audio"} <= mounts)
         self.assertEqual(services["gradio"]["profiles"], ["gradio"])
+        self.assertEqual(
+            services["gradio"]["command"], ["chatterpal-run", "--mode", "web"]
+        )
         self.assertEqual(services["gradio"]["environment"]["GRADIO_PORT"], "7860")
         self.assertEqual(services["gradio"]["environment"]["GRADIO_SHARE"], "false")
         self.assertEqual(

@@ -8,11 +8,9 @@ uv --version >nul 2>&1
 if errorlevel 1 (
     echo 错误: 未找到uv包管理器
     echo 请访问 https://docs.astral.sh/uv/getting-started/installation/ 安装uv
-    pause
     exit /b 1
 )
 
 REM 运行设置脚本
-uv run python scripts/setup.py %*
-
-pause
+uv run --no-sync --project "%~dp0.." python "%~dp0setup.py" %*
+exit /b %errorlevel%

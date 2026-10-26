@@ -2,9 +2,11 @@
 
 ## 配置契约
 
-**第一次安装请从仓库中的 [`.env.example`](../.env.example) 复制配置，以 [`Settings`](../src/chatterpal/config/settings.py) 和[组件工厂](../src/chatterpal/config/loader.py)的实际读取行为为准。** 本文解释同一套配置，不再维护另一份完整 `.env`、Dockerfile 或 Compose 示例。
+配置字段以 [`Settings`](../src/chatterpal/config/settings.py) 和[组件工厂](../src/chatterpal/config/loader.py)为准。源码安装可复制 [`.env.example`](../.env.example)；wheel 安装使用 `chatterpal-setup env` 显式创建用户配置，也可以只设置进程环境变量，无需 `.env`。
 
-应用按“代码默认值 → `.env` → 进程环境变量”的顺序加载，后者优先。`get_settings()` 首先读取当前工作目录的 `.env`，不存在时才尝试源码所在仓库根目录的 `.env`；相对路径始终相对于进程工作目录。建议在仓库根目录执行本指南命令。加载不会将文件值写入 `os.environ`，因此 `reload_settings()` 能重新读取文件修改。
+公开 CLI 按“代码默认值 → 选定的 dotenv 文件 → 进程环境变量”的顺序加载，后者优先。`--env-file` 优先于 `CHATTERPAL_ENV_FILE`；未指定时先找当前目录的 `.env`，再找 `$XDG_CONFIG_HOME/chatterpal/.env`（默认 `~/.config/chatterpal/.env`）。显式指定的文件不存在时报告错误。CLI 加载文件值到进程环境且不覆盖已有变量，修改文件后重启命令即可。
+
+直接使用 Python 的 `get_settings()` 则先读取当前目录 `.env`，不存在时尝试源码根目录 `.env`；这种读取不会修改 `os.environ`，`reload_settings()` 可重新读取文件修改。两条路径中的相对数据路径都相对于进程工作目录。
 
 旧文件或共享 `.env` 中多余的键会被忽略，这只保证兼容读取；增加一个未被代码读取的键不会启用对应功能。下文列出高级聊天配置的实际入口和限制。
 
@@ -14,12 +16,12 @@
 
 - Python **3.12+**，推荐 `.python-version` 指定的 **3.12**，与 `pyproject.toml` 一致。
 - Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)；本地 React 开发还需要 Node.js 20+ 和 npm。
-- 建议至少 4 GB 内存，较大的 Whisper 模型需要更多内存和磁盘空间。
+- 本地完整运行时建议至少 4 GB 内存，较大的 Whisper 模型需要更多内存和磁盘空间；云端 API 按实际并发与上传大小配置资源。
 - 首次 Whisper 识别可能下载模型；DashScope、OpenAI、Edge TTS、Aliyun NLS 需要访问对应在线服务。
 
 ### 原生依赖与安装失败排查
 
-Python 包安装前先准备音频工具。PyAudio 需要 PortAudio；没有可用 wheel 时还需要 C 编译器和 Python 头文件。
+只有启用本地音频、Whisper、评分或设备录音的运行时才需要相应原生工具。`microphone` / `full` 的 PyAudio 需要 PortAudio；没有可用 wheel 时还需要 C 编译器和 Python 头文件。`cloud` 中官方 NLS SDK 的 OSS 依赖含 `crcmod` 扩展，部分平台安装时也需要编译器，但无需 PortAudio 或本地模型。下列系统安装命令适用于完整本地开发环境。
 
 macOS（Homebrew）：
 
@@ -50,7 +52,55 @@ uv python install 3.12
 uv sync --locked --python 3.12
 ```
 
-如需使用 pip，可用 Python 3.12 创建虚拟环境，然后用该环境的解释器执行 `python -m pip install -e .`；uv 路径使用已提交的锁文件，更便于复现。
+`uv sync --locked` 默认安装统一的 `dev` 依赖组，含完整运行时与测试工具，保留已有开发和 CI 行为。生产环境用 `--no-dev` 显式选择需要的 extras：
+
+```bash
+# 纯配置与 CLI；不会安装音频、云提供商或 UI 运行时。
+uv sync --locked --no-dev
+
+# 云端 API；需选择 ASR_PROVIDER=alibaba 并配置云提供商凭据。
+uv sync --locked --no-dev --extra api --extra cloud
+```
+
+| Extra | 用途 |
+| --- | --- |
+| `api` | FastAPI、Uvicorn、multipart 上传；单独安装不提供语音或模型引擎 |
+| `audio` | NumPy、SoundFile、SciPy 音频读写与转换 |
+| `aliyun-asr` | 音频工具与官方 Aliyun NLS SDK |
+| `cloud` | Aliyun NLS、Edge TTS、DashScope / OpenAI 客户端及音频工具 |
+| `local-whisper` | 本地 Whisper、PyTorch、SpeechRecognition；不含 PyAudio |
+| `assessment` | Parselmouth、Librosa 和音频分析依赖 |
+| `gradio` | 完整 Gradio UI 及云端、本地识别和分析依赖；不含 PyAudio |
+| `microphone` | 本地识别与 PyAudio 设备录音 |
+| `full` | 所有运行时，含设备录音 |
+| `dev` | `full` 与统一开发工具；也是默认 uv 开发依赖组的来源 |
+
+wheel 安装与源码无关，可在任意目录使用公开命令：
+
+```bash
+python -m pip install '/path/to/chatterpal-0.1.0-py3-none-any.whl[api,cloud]'
+chatterpal-run --help
+chatterpal-setup check
+chatterpal-setup env
+# 编辑命令打印出的配置路径，再校验凭据是否齐全；此检查不调用提供商。
+chatterpal-setup verify
+chatterpal-run --mode api
+```
+
+本地源码用 pip 安装时，完整开发环境为 `python -m pip install -e '.[dev]'`，仅 Gradio 为 `python -m pip install -e '.[gradio]'`；裸 `pip install -e .` 只安装基础配置与 CLI。公开的 `chatterpal` 与 `chatterpal-run` 共享入口，支持 `web`（默认）、`api`、`chat`、`test`、`demo` 模式。`test` 模式需要源码测试目录，离开仓库时传 `--tests-path /path/to/checkout/tests`。所有公开命令的 `--help` 与只读 `chatterpal-setup check` 无需运行时 extras。
+
+`chatterpal-setup` 默认只检查已安装版本，不安装依赖、不创建文件或目录。`env` 独占创建配置文件（POSIX 权限 0600，新建父目录 0700），已有文件或符号链接会保持原样并返回失败；`dirs` 才显式创建用户配置、数据和缓存目录。
+
+### Linux / Windows 的本地 CPU 安装
+
+云端 `api,cloud` 安装不引入 Torch 或 CUDA。需要本地 Whisper 且希望避免 Linux x86_64 默认 Torch 的 CUDA 下载时，使用独立虚拟环境，先从 PyTorch CPU 索引安装锁中对应版本，再安装本地运行时：
+
+```bash
+python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.8.0'
+python -m pip install '/path/to/chatterpal-0.1.0-py3-none-any.whl[api,cloud,local-whisper]'
+```
+
+不要随后运行默认 `uv sync`，它会按通用锁恢复完整开发依赖。`WHISPER_DEVICE=cpu` 控制推理设备，不改变 pip/uv 选择的 Torch 安装包。macOS 使用 PyPI 的原生 Torch 包；CPU 索引命令不适用于 macOS。这里提供安装路径，尚未实测 Linux x86_64 / Windows 的 CPU 专用安装。
 
 macOS / Linux 复制模板：
 
@@ -85,18 +135,18 @@ Copy-Item .env.example .env
 
 ### OpenAI LLM
 
-设置 `LLM_PROVIDER=openai` 与 `OPENAI_API_KEY`；可选 `OPENAI_MODEL` 默认 `gpt-3.5-turbo`。当前 OpenAI 适配器直接向 URL 发送 HTTP POST，因此 `OPENAI_BASE_URL` 若设置，必须是**完整聊天接口地址**（例如 `https://api.openai.com/v1/chat/completions`），不是仅到 `/v1` 的 SDK 根地址。不设置时工厂使用该完整默认地址。
+设置 `LLM_PROVIDER=openai` 与 `OPENAI_API_KEY`；可选 `OPENAI_MODEL` 默认 `gpt-3.5-turbo`，`OPENAI_TIMEOUT` 为大于 0、最多 300 秒的 HTTP 超时，默认 30 秒。当前 OpenAI 适配器直接向 URL 发送 HTTP POST，因此 `OPENAI_BASE_URL` 若设置，必须是**完整聊天接口地址**（例如 `https://api.openai.com/v1/chat/completions`），不是仅到 `/v1` 的 SDK 根地址。不设置时工厂使用该完整默认地址。
 
 ### ASR
 
-`ASR_PROVIDER=whisper` 是默认值，不需要云端 ASR 凭据。`WHISPER_MODEL` 支持 `tiny`、`base`、`small`、`medium`、`large`、`large-v2`、`large-v3`。降低模型大小可减少内存使用。
+`ASR_PROVIDER=whisper` 是默认值，需安装 `local-whisper`（`gradio` / `full` 已包含），不需要云端 ASR 凭据。`WHISPER_MODEL` 支持 `tiny`、`base`、`small`、`medium`、`large`、`large-v2`、`large-v3`。降低模型大小可减少内存使用。
 
-当前 Whisper 适配器使用 SpeechRecognition 的 Whisper 入口，模型缓存遵循 Whisper 的 `XDG_CACHE_HOME/whisper`（未设置时使用用户缓存目录）。`MODEL_CACHE_DIR` 会创建应用模型目录，但不会重定向 Whisper 的下载缓存。`WHISPER_DEVICE` 目前只传入适配器配置，识别实现没有读取它；不要依赖该变量强制选择 CPU/GPU。GPU 的 PyTorch 安装需按运行平台单独配置。
+Whisper 在首次识别时加载模型，并按模型 / 设备缓存；下载目录遵循 `XDG_CACHE_HOME/whisper`（未设置时使用用户缓存目录）。`MODEL_CACHE_DIR` 创建应用模型目录，不重定向 Whisper 下载缓存。`WHISPER_DEVICE=cpu` 明确选择 CPU；`auto` 在可用时选择 CUDA。GPU 的 PyTorch 安装需按运行平台单独配置。
 
 如需 Aliyun NLS，提供商名称为 **`ASR_PROVIDER=alibaba`**，安装可选 SDK：
 
 ```bash
-uv pip install --python .venv alibabacloud-nls-python-sdk
+uv sync --locked --no-dev --extra api --extra cloud
 ```
 
 然后配置 `ALIYUN_ASR_APP_KEY`，并选择一种认证方式：
@@ -107,7 +157,7 @@ uv pip install --python .venv alibabacloud-nls-python-sdk
 | AccessKey 换取 token | `ALIYUN_ASR_ACCESS_KEY_ID` 与 `ALIYUN_ASR_ACCESS_KEY_SECRET` |
 | 旧 AccessKey 名称 | `ALIBABA_API_KEY` 与 `ALIBABA_API_SECRET`，仅作为 AccessKey 的兼容回退 |
 
-两种方式都需要 NLS 项目的应用 Key。旧文档中的 `DEFAULT_ASR_ENGINE=aliyun` 不被读取。默认镜像未安装可选 NLS SDK；若切换云端 ASR，需要在自己的镜像中添加该依赖。
+两种方式都需要 NLS 项目的应用 Key。旧文档中的 `DEFAULT_ASR_ENGINE=aliyun` 不被读取。`aliyun-asr`、`cloud` 和 `full` 都包含官方 `alibabacloud-nls-python-sdk`，它提供 `nls` 模块，也声明 Matplotlib / OSS 依赖。不要安装名称相近的其他 NLS 包。
 
 ### TTS
 
@@ -115,17 +165,19 @@ uv pip install --python .venv alibabacloud-nls-python-sdk
 
 设置 `TTS_PROVIDER=alibaba` 可使用 CosyVoice，凭据与 DashScope LLM 相同：优先 `DASHSCOPE_API_KEY`，兼容 `ALIBABA_API_KEY`，无需 ASR Secret。`ALIBABA_TTS_VOICE` 默认 `longxiaochun`，适配器使用 `cosyvoice-v1` 模型。
 
-`ALIBABA_TTS_VOLUME` 是 0–100 的整数；`ALIBABA_TTS_SPEECH_RATE` 和 `ALIBABA_TTS_PITCH_RATE` 是 0.5–2.0 的浮点倍率，默认都是 `1.0`。当前 Alibaba TTS 适配器保存这些值，但 SDK 调用只传递 model / voice，**这些音量、语速和音调配置尚不会改变服务端合成结果**。Edge 的对应参数会实际传递给服务。
+`ALIBABA_TTS_VOLUME` 是 0–100 的整数；`ALIBABA_TTS_SPEECH_RATE` 和 `ALIBABA_TTS_PITCH_RATE` 是 0.5–2.0 的浮点倍率，默认都是 `1.0`。Alibaba TTS 现将音量、语速、音调和所选音频格式传给 SDK；Edge 对应参数也会实际传递。每个请求固定自己的参数，缓存键包含这些有效参数；请求中的音色覆盖不修改共享默认值。生成文件按实际音频容器返回扩展名和 MIME；显式 PCM16 单声道输出包装为 WAV。
 
 ## 启动与验证
 
 ### API 与 React
 
-在仓库根目录启动 API：
+在仓库根目录启动 API（wheel 安装省略 `uv run --no-sync`）：
 
 ```bash
-uv run python scripts/run_api.py
+uv run --no-sync chatterpal-run --mode api
 ```
+
+`--no-sync` 保留上一步显式选择的 extras；直接 `uv run` 可能恢复默认完整开发组。原 `python scripts/run_api.py` 仍作为源码入口兼容。CLI 支持 `--host`、`--port` 和 `--env-file`。
 
 另开终端，从仓库根目录启动前端：
 
@@ -138,14 +190,14 @@ npm run dev
 | 服务 | 本地地址 | 说明 |
 | --- | --- | --- |
 | React 开发界面 | http://localhost:3010 | Vite 将 `/api` 代理到本机 8010 |
-| API | http://localhost:8010 | `scripts/run_api.py` 默认绑定 `127.0.0.1:8010`，通过 `API_HOST` / `API_PORT` 调整 |
+| API | http://localhost:8010 | 默认绑定 `127.0.0.1:8010`，通过 `API_HOST` / `API_PORT` 或 CLI `--host` / `--port` 调整 |
 | API 文档 | http://localhost:8010/docs | FastAPI Swagger UI |
 | API 健康检查 | http://localhost:8010/health | 组件初始化状态，不能证明远端 API Key 有效 |
 
 使用以下跨平台命令检查健康接口：
 
 ```bash
-uv run python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8010/health').read().decode())"
+uv run --no-sync python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8010/health').read().decode())"
 ```
 
 ### INT2 学习流程与独立开发端口
@@ -161,17 +213,18 @@ CHATTERPAL_API_TARGET=http://127.0.0.1:18200 npm --prefix frontend run dev -- --
 
 使用 Vite 的同源 `/api` 代理；如浏览器直接跨源请求 API，将前端 Origin 加入 `LEARNING_ALLOWED_ORIGINS`。`LEARNING_MAX_WORKERS`、`LEARNING_MAX_PENDING` 和操作超时限制学习工作队列，pending 上限至少等于 worker 数量。部署范围是单个 API 实例与本地 SQLite。
 
-默认原音仅在数据库中临时保存 1 小时供回放，启用保留后默认 7 天；导出仅含文字与资产元数据。次日复习尚未接入，页面明确显示不可用。详细字段见 [学习 API 契约](learning_api_contract.md)，离线真实浏览器、容器 smoke 和完整回归命令见 [INT2 验收记录](int2_weekend_acceptance.md)。
+默认原音仅在数据库中临时保存 1 小时供回放，启用保留后默认 7 天；导出仅含文字与资产元数据。完成跟读或重练后可显式保存表达，次日到期复习；提示 / 揭示与验证状态分别记录。详细字段见 [学习 API 契约](learning_api_contract.md)，实际浏览器与完整回归结果以相应验收记录为准。
 
 ### 可选 Gradio
 
 ```bash
-uv run python -m chatterpal.web.app
+uv sync --locked --no-dev --extra gradio
+uv run --no-sync chatterpal-run --mode web
 ```
 
 默认地址 http://localhost:7860。`GRADIO_SERVER_NAME` 默认 `127.0.0.1`，`GRADIO_PORT` 默认 `7860`，`GRADIO_SHARE` 默认 `false`。局域网或容器访问可将主机设置为 `0.0.0.0`。
 
-`chatterpal.web.app` 提供应用工厂和启动入口，没有可供 Gunicorn / Waitress 使用的模块级 WSGI `app`；直接使用上述入口。API 使用 FastAPI / Uvicorn，由 `scripts/run_api.py` 启动。
+`chatterpal.web.app` 提供应用工厂和启动入口，没有可供 Gunicorn / Waitress 使用的模块级 WSGI `app`；直接使用上述入口。API 使用 FastAPI / Uvicorn，公开入口为 `chatterpal-run --mode api`；`scripts/run_api.py` 只在源码中保留兼容。Docker 后端与可选 Gradio 都使用安装到 wheel 中的 CLI，不依赖容器内另拷源码或 `scripts` 包。
 
 ### 本地配置检查
 
@@ -207,15 +260,58 @@ Gradio 使用独立进程和 7860 端口。Compose 会为容器设置对外监�
 
 Compose 通过 `env_file` 读取 `.env`。如需其他文件，可在 macOS / Linux 设置 `CHATTERPAL_ENV_FILE`，或在 PowerShell 设置 `$env:CHATTERPAL_ENV_FILE` 后运行相同命令。Compose 的 `environment` 明确覆盖存储路径，因此宿主机 `.env` 的路径不会逃出容器挂载目录。模型缓存、应用数据、临时音频、日志和偏好使用命名卷；`docker compose down` 保留这些卷。
 
-默认锁文件在 Linux x86_64 上可能包含体积较大的 PyTorch CUDA 依赖；首次构建需要相应网络和磁盘空间。当前构建未提供独立 CPU 依赖配置，镜像可在无 GPU 环境使用 CPU，但依赖下载体积仍可能较大。
+Docker 默认 `CHATTERPAL_EXTRAS=full`，保留完整本地 / Gradio / 设备运行时。云端 API 可在凭据文件中选择 `ASR_PROVIDER=alibaba`、配置 NLS 认证与 LLM 凭据，再只安装云端 extras：
+
+```bash
+CHATTERPAL_EXTRAS='api cloud' docker compose up --build -d backend frontend
+# 或独立构建后端镜像：
+docker build --build-arg 'CHATTERPAL_EXTRAS=api cloud' -t chatterpal-cloud:local .
+```
+
+Windows PowerShell 先设置 `$env:CHATTERPAL_EXTRAS='api cloud'`，再运行同一个 Compose 命令。构建参数决定安装的 Python 包，环境变量决定使用的提供商；两者需要一致。这个云端镜像包含官方 NLS SDK，无 Whisper、Torch、CUDA、Gradio、Parselmouth 或 PyAudio。编译器只留在 builder 阶段。可选 Gradio 服务需要带 `gradio` 或 `full` 的镜像。
+
+`full` / `local-whisper` 的通用锁在 Linux x86_64 仍可能下载较大的 PyTorch CUDA 依赖；`WHISPER_DEVICE=cpu` 不能减少依赖下载。上文 CPU 专用 pip 路径与 Docker 的通用锁是两种安装方式，当前 Dockerfile 未提供 CPU 专用锁。后端健康检查和前端 `/api/` 代理需要在实际容器启动后验证；未测试的平台不能沿用另一架构的结果。
 
 本仓库不提供 `Dockerfile.prod`、`docker-compose.prod.yml`、Redis 缓存集成或平台专用云部署清单。部署到云平台时，以现有容器入口为基础配置服务端口、环境变量和持久化存储；不要依赖不存在的根目录 `app.py` 自动发现应用。前后端通常需要分别部署，并配置实际可达的 `/api/` 代理。
+
+## 打包与安装实测（2026-10-25）
+
+macOS arm64 / Python 3.12.12 的独立虚拟环境完成以下检查，安装目录与工作目录均在源码仓库外：
+
+| 安装配置 | 已安装发行包数量（含 ChatterPal） | 验证 |
+| --- | --- | --- |
+| 基础 wheel | 9 | 三个公开命令帮助、只读版本检查、纯环境变量配置校验、demo、私有配置创建与不覆盖、环境变量优先级 |
+| `api,cloud` 冻结依赖 + wheel | 72 | 真实 CLI socket `/health`、两轮聊天、终端聊天、会话保留、TTS 失败保留文字、lifespan 关闭；无本地模型 / 设备 / Gradio / 声学依赖 |
+| `aliyun-asr` | 37 | 官方 `nls` 导入与已有 token 构造，无网络识别 |
+| `local-whisper` | 36 | CPU 配置构造，无模型加载 / 下载，无 PyAudio |
+| `gradio` | 125 | CLI 启动真实页面和 `/config`，42 个组件 / 4 个事件依赖，无 PyAudio |
+| `full` | 126 | 冻结安装与依赖兼容检查 |
+| 默认 `dev` | 146 | 冻结安装与依赖兼容检查；110 项打包、配置、启动、部署与 API 资源回归通过 |
+
+云端聊天使用本地可控 OpenAI 兼容服务；TTS 使用无效音色在本地失败，不发送外部语音请求。启动与依赖导入耗时受缓存影响，此处不作生产性能结论。未测试真实付费提供商、Whisper 推理、实体录音设备、Windows 批处理运行或 Linux x86_64 CPU 专用安装。完整开发回归仍按仓库既有覆盖率门槛执行。`chatterpal-run --mode test --test-type config` 会执行真实配置测试并保留仓库覆盖率门槛；只做局部诊断时可显式设置 `PYTEST_ADDOPTS='-o addopts='`，不能以局部覆盖率结果替代全仓验收。
+
+### 稳定源码的 wheel / 容器复验（2026-10-26）
+
+最终源码冻结包含 API 工作线程 / 上传生命周期、Alibaba 音色、Opus、OpenAI 超时配置和复习提示隔离修复，以及两个未使用类型导入的清理。冻结后重新构建 wheel 和云端后端，确认构建期间源码未变化；包含历史复习 UI 的既有前端镜像经 44 项构建输入哈希和镜像 ID 复核后复用，输入无变化。实际平台为 **linux/arm64**：
+
+| 镜像 | Docker 引擎报告大小 | 使用缓存的构建耗时 | 完整镜像 ID |
+| --- | --- | --- | --- |
+| `chatterpal-h-cloud:20261025-4mwftc` | 294,661,003 字节 | 14.166 秒（最终冻结重建） | `sha256:6a18ddc4bf51e596c325c4123359693b25cfa72917d7064709290cfcef18ee87` |
+| `chatterpal-h-frontend:20261025-4mwftc` | 25,887,066 字节 | 10.376 秒（原构建，本次核验复用） | `sha256:755a2833e9fad8b1ab4a67929fa8539e2de1b99c6bc236dc5a7d0c85496d35e7` |
+
+大小是镜像内容大小，不是传输大小或内存占用。首次成功云端构建耗时 832.251 秒，包含网络重试；此前两次分别因下载截断导致 uv wheel 哈希不符、Debian 镜像站 502 失败，没有绕过哈希验证。上表记录使用缓存的构建，不能作为无缓存构建性能。
+
+最终冻结 wheel 为 246,625 字节，SHA256 `a8cc98525026674b8e9b22aff45bd6fc9422b8644bcb7e7d1e7d51b1462bef33`。将 wheel 内 82 个包文件的相对路径与各文件 SHA256 组成按键排序的紧凑 JSON，再计算 SHA256，得到包指纹 `0c9b5aa47f9c60666d9a7f8d06226ec2a1af403d6e66e774d0adf3f66baaf484`。源码、构建 wheel、仓库外安装与容器内 `/opt/venv/lib/python3.12/site-packages/chatterpal` 的这 82 个文件逐字节一致；容器没有 `/app/src` 或 `/app/scripts` 回退路径。
+
+最终冻结 wheel 的真实 CLI `/health`、两轮 API 聊天、一轮终端聊天及关闭验证通过。最终镜像在独立 `--internal` Docker 网络中启动，以同网络的可控 OpenAI 兼容端点提供回复；后端与前端内置健康检查均为 healthy，直接后端与 nginx `/api/chat` 代理均返回 200、保留同一会话，TTS 在本地失败时仍返回文字。容器启动至健康为 2.191 秒，wheel socket 为 0.952 秒；这些只反映该受控环境中的缓存与启动开销。临时容器和网络已清理，未启用外部服务请求。
+
+本次没有构建或验证 amd64、CPU 专用 Linux 镜像、默认 `full` 镜像或 Docker Gradio profile。此前 macOS Gradio 实际页面检查不替代这些平台 / 部署方式的验证。
 
 ## 高级配置与兼容性
 
 ### Settings 的聊天设置
 
-`MAX_HISTORY_LENGTH`（默认 20）、`SESSION_TIMEOUT`（默认 3600 秒）和可选 `SYSTEM_PROMPT` 传给 Gradio 的 `ChatService`。当前 API 的 `ChatService` 使用自身默认值。旧模板中的 `CHAT_MAX_HISTORY_LENGTH`、`CHAT_SESSION_TIMEOUT`、`CUSTOM_SYSTEM_PROMPT` 不会映射到这些字段。
+`MAX_HISTORY_LENGTH`（默认 20）与 `SESSION_TIMEOUT`（默认 3600 秒）传给公开 CLI 和 API 的 `ChatService`；这两个入口还传入 `MAX_SESSIONS`（默认 1000）作为会话容量上限。Gradio 也读取历史长度、超时与可选 `SYSTEM_PROMPT`。旧模板中的 `CHAT_MAX_HISTORY_LENGTH`、`CHAT_SESSION_TIMEOUT`、`CUSTOM_SYSTEM_PROMPT` 不会映射到这些字段。
 
 ### 增强聊天配置管理器
 
@@ -241,7 +337,7 @@ manager.update_config({
 
 ### 其他已知配置边界
 
-- `AUDIO_SAMPLE_RATE`、`AUDIO_MAX_DURATION`、`AUDIO_TEMP_DIR` 可由 Settings / 音频配置辅助函数读取，但 API 当前将上传和生成文件写入系统临时目录下的 `chatterpal/`。Compose 用 `TMPDIR` 将系统临时目录放在音频卷内。不要依赖 `AUDIO_MAX_DURATION` 作为 API 上传限额。
+- `AUDIO_TEMP_DIR` 决定 API 上传与生成音频目录，Compose 固定为 `/app/temp_audio` 并挂载音频卷。生成文件还受 `GENERATED_AUDIO_TTL`、`GENERATED_AUDIO_MAX_FILES`、`GENERATED_AUDIO_MAX_BYTES` 约束。不要依赖 `AUDIO_MAX_DURATION` 作为 API 上传限额。
 - `LOG_LEVEL`、`LOG_FILE` 是配置字段，但当前两个启动入口都自行初始化 INFO 日志，尚未按这两个值创建文件日志处理器。使用进程输出或 `docker compose logs` 观察运行状态。
 - `SECRET_KEY`、`ALLOWED_HOSTS` 仍保留在 Settings 供已有调用方使用，当前 Web 入口没有据此启用身份认证或主机白名单，因此模板不将它们列为安全开关。
 

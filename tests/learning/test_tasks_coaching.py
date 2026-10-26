@@ -64,6 +64,10 @@ def test_coaching_prompt_uses_the_selected_authored_content(task_id):
     assert state.task.steps[0].question in instruction
     assert '"content_version": "1"' in instruction
     assert "No pronunciation, acoustic, fluency, or ability scores" in instruction
+    assert "transfer_questions" not in instruction
+    for question in state.task.transfer_questions:
+        assert question.prompt not in instruction
+        assert question.question_id not in instruction
 
 
 def test_a_hint_is_presented_as_used_assistance_not_a_learner_answer():

@@ -61,9 +61,11 @@ def test_evaluation_functionality(offline_runtime):
     service = EvaluationService(asr=runtime.asr, llm=runtime.llm)
     result = service.evaluate_pronunciation(runtime.audio_bytes, "Hello world")
     assert isinstance(result, AssessmentResult)
-    assert result.overall_score >= 0
+    assert result.overall_score is None
+    assert result.dimensions['overall']['status'] == 'unavailable'
     assert result.recognized_text == "Hello world"
-    assert result.feedback == "Good pronunciation!"
+    assert result.dimensions['ai_feedback']['status'] == 'unavailable'
+    assert '未校准' in result.feedback
 
 
 def test_correction_functionality(offline_runtime):
@@ -79,7 +81,8 @@ def test_correction_functionality(offline_runtime):
     assert "overall_score" in result
     assert "main_issues" in result
     assert "key_suggestions" in result
-    assert result["overall_score"] > 0
+    assert result['overall_score'] is None
+    assert result['dimensions']['overall']['status'] == 'unavailable'
     assert result["key_suggestions"] != ["请检查音频质量后重试"]
 
 
@@ -142,8 +145,10 @@ def test_end_to_end_workflow(offline_runtime):
     )
     assert isinstance(correction_result, dict)
     assert "overall_score" in correction_result
-    assert correction_result["overall_score"] > 0
-    feedback_text = f"My score is {eval_result.overall_score:.2f}"
+    assert correction_result['overall_score'] is None
+    assert correction_result['dimensions']['accuracy']['score'] == 100
+    assert eval_result.overall_score is None
+    feedback_text = 'My pronunciation score is unavailable; help me practice this sentence.'
     final_response, final_session = chat_service.chat_with_text(feedback_text, session_id)
     assert final_response == "I'm fine, thank you!"
     assert final_session == session_id

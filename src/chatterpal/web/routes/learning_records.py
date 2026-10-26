@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 from starlette.background import BackgroundTask
 
 from ...learning.storage import LearningStore, StoreError
+from ...learning.presentation import public_learning_result
+from ...learning.review import public_record
 
 
 COOKIE_NAME = "chatterpal_learner"
@@ -181,6 +183,13 @@ def mount_learning_api(
     ):
         return database.update_profile(learner_id, patch.model_dump(exclude_unset=True))
 
+    def record_view(record):
+        # Formal learning routes expose business views; repository export keeps
+        # complete owner data for portability.
+        if allow_record_writes:
+            return record
+        return public_learning_result(public_record(record))
+
     @router.get("/records")
     def list_records(
         kind: str | None = None,
@@ -190,9 +199,10 @@ def mount_learning_api(
         learner_id: str = Depends(identity),
         database: LearningStore = Depends(repository),
     ):
-        return database.list_records(
+        page = database.list_records(
             learner_id, kind=kind, session_id=session_id, limit=limit, cursor=cursor
         )
+        return {**page, "items": [record_view(record) for record in page["items"]]}
 
     @router.get("/sessions")
     def list_sessions(
@@ -205,7 +215,7 @@ def mount_learning_api(
             learner_id, kind="session", limit=limit, cursor=cursor
         )
         return {
-            "items": [item["data"] for item in records["items"]],
+            "items": [record_view(item)["data"] for item in records["items"]],
             "next_cursor": records["next_cursor"],
         }
 
@@ -220,7 +230,7 @@ def mount_learning_api(
         )
         if not records["items"]:
             raise StoreError("session_not_found", "Learning session not found", 404)
-        return records["items"][0]["data"]
+        return record_view(records["items"][0])["data"]
 
     @router.get("/records/{record_id}")
     def get_record(
@@ -228,7 +238,7 @@ def mount_learning_api(
         learner_id: str = Depends(identity),
         database: LearningStore = Depends(repository),
     ):
-        return database.get_record(learner_id, record_id)
+        return record_view(database.get_record(learner_id, record_id))
 
     @router.post("/records")
     def create_record(
@@ -304,7 +314,8 @@ def mount_learning_api(
         learner_id: str = Depends(identity),
         database: LearningStore = Depends(repository),
     ):
-        return database.get_operation(learner_id, operation_id=operation_id)
+        operation = database.get_operation(learner_id, operation_id=operation_id)
+        return operation if allow_record_writes else public_learning_result(operation)
 
     @router.get("/requests/{request_id}")
     def get_request(
@@ -313,7 +324,10 @@ def mount_learning_api(
         learner_id: str = Depends(identity),
         database: LearningStore = Depends(repository),
     ):
-        return database.get_operation(learner_id, request_id=request_id, action=action)
+        operation = database.get_operation(
+            learner_id, request_id=request_id, action=action
+        )
+        return operation if allow_record_writes else public_learning_result(operation)
 
     @router.get("/export")
     def export_data(

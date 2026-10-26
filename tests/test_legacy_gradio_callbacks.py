@@ -182,8 +182,10 @@ def test_score_and_correction_reports_round_trip_through_http_queue(tmp_path, mo
             target, handle_file(audio_path), api_name="/_evaluate_pronunciation",
         )
         assert isinstance(score, str)
-        assert "83.0/100" in score
-        assert "76.0/100" in score
+        assert '83.0/100' not in score
+        assert '76.0/100' not in score
+        assert '综合评分: 暂不可评估' in score
+        assert '识别文本一致度: 100.0%' in score
         assert "Practise the final consonant" in score
         assert "Repeat the word slowly" in score
         assert "未校准" in score
@@ -197,7 +199,8 @@ def test_score_and_correction_reports_round_trip_through_http_queue(tmp_path, mo
         assert all(isinstance(value, str) for value in report)
         assert report[0] == target
         assert "未校准" in report[1]
-        assert f"{expected.overall_score:.1f}/100" in report[1]
+        assert expected.overall_score is None
+        assert '综合评分: 暂不可评估' in report[1]
         assert expected.detailed_feedback in report[1]
         for item in expected.pronunciation_errors:
             assert item["description"] in report[2]

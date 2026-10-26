@@ -128,6 +128,8 @@ def _unavailable_feedback(
 
 
 def _feedback_messages(session: TaskSession) -> list[dict[str, str]]:
+    task = session.task.to_snapshot()
+    task.pop("transfer_questions", None)
     instruction = (
         "INT2_FEEDBACK\n"
         "Give grounded text feedback for this pinned task. Learner turns in the "
@@ -155,7 +157,7 @@ def _feedback_messages(session: TaskSession) -> list[dict[str, str]]:
         "nonempty evidence must also be an exact quotation; use evidence='' "
         "when the text does not support an assessment. Use unverified when "
         "uncertain. Do not include numeric scores or additional fields.\n"
-        + json.dumps({"task": session.task.to_snapshot()}, ensure_ascii=False)
+        + json.dumps({"task": task}, ensure_ascii=False)
     )
     return [
         {"role": "system", "content": instruction},

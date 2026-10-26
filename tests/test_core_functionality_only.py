@@ -69,9 +69,11 @@ def test_evaluation_service_basic(offline_runtime):
     service = EvaluationService(asr=runtime.asr, llm=runtime.llm)
     result = service.evaluate_pronunciation(runtime.audio_bytes, "Hello world")
     assert isinstance(result, AssessmentResult)
-    assert result.overall_score >= 0
+    assert result.overall_score is None
+    assert result.dimensions['overall']['status'] == 'unavailable'
     assert result.recognized_text == "Hello world"
-    assert result.feedback == "Good pronunciation!"
+    assert result.dimensions['ai_feedback']['status'] == 'unavailable'
+    assert '未校准' in result.feedback
 
 
 def test_correction_service_basic(offline_runtime):
@@ -84,7 +86,8 @@ def test_correction_service_basic(offline_runtime):
     result = service.quick_correction(runtime.audio_bytes, "Hello world")
     assert isinstance(result, dict)
     assert "overall_score" in result
-    assert result["overall_score"] > 0
+    assert result['overall_score'] is None
+    assert result['dimensions']['overall']['status'] == 'unavailable'
     assert result["key_suggestions"] != ["请检查音频质量后重试"]
 
 
@@ -173,7 +176,8 @@ def test_end_to_end_workflow(offline_runtime):
         runtime.audio_bytes, "Hello, how are you"
     )
     assert isinstance(correction_result, dict)
-    assert correction_result["overall_score"] > 0
+    assert correction_result['overall_score'] is None
+    assert correction_result['dimensions']['accuracy']['score'] == 100
 
 
 if __name__ == "__main__":

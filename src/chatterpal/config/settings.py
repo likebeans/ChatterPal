@@ -38,10 +38,18 @@ class Settings(BaseSettings):
     alibaba_api_secret: str = Field(
         default="", description="Legacy ASR access key secret (not needed for LLM/TTS)"
     )
-    aliyun_asr_app_key: str = Field(default="", description="Aliyun NLS application key")
-    aliyun_asr_token: str = Field(default="", description="Aliyun NLS token (optional with access keys)")
-    aliyun_asr_access_key_id: str = Field(default="", description="Aliyun NLS access key ID")
-    aliyun_asr_access_key_secret: str = Field(default="", description="Aliyun NLS access key secret")
+    aliyun_asr_app_key: str = Field(
+        default="", description="Aliyun NLS application key"
+    )
+    aliyun_asr_token: str = Field(
+        default="", description="Aliyun NLS token (optional with access keys)"
+    )
+    aliyun_asr_access_key_id: str = Field(
+        default="", description="Aliyun NLS access key ID"
+    )
+    aliyun_asr_access_key_secret: str = Field(
+        default="", description="Aliyun NLS access key secret"
+    )
     openai_api_key: Optional[str] = Field(
         default=None, description="OpenAI API key (optional)"
     )
@@ -49,20 +57,31 @@ class Settings(BaseSettings):
         default=None, description="OpenAI full chat-completions endpoint URL (optional)"
     )
     openai_model: str = Field(default="gpt-3.5-turbo", description="OpenAI model name")
+    openai_timeout: float = Field(
+        default=30,
+        gt=0,
+        le=300,
+        description="OpenAI-compatible HTTP timeout in seconds",
+    )
     alibaba_model: str = Field(default="qwen-plus", description="Alibaba model name")
 
     # Additional Alibaba Configuration
     dashscope_api_key: Optional[str] = Field(
-        default=None, description="DashScope API key for LLM/TTS; takes precedence over the legacy key"
+        default=None,
+        description="DashScope API key for LLM/TTS; takes precedence over the legacy key",
     )
     alibaba_base_url: str = Field(
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
         description="Alibaba OpenAI-compatible API base URL",
     )
-    alibaba_max_tokens: int = Field(default=2000, gt=0, description="Alibaba max tokens")
+    alibaba_max_tokens: int = Field(
+        default=2000, gt=0, description="Alibaba max tokens"
+    )
     alibaba_temperature: float = Field(default=0.7, description="Alibaba temperature")
     alibaba_top_p: float = Field(default=0.8, description="Alibaba top_p")
-    alibaba_enable_search: bool = Field(default=False, description="Alibaba enable search")
+    alibaba_enable_search: bool = Field(
+        default=False, description="Alibaba enable search"
+    )
 
     # Audio Configuration
     audio_sample_rate: int = Field(default=16000, description="Audio sample rate in Hz")
@@ -90,24 +109,34 @@ class Settings(BaseSettings):
     asr_provider: str = Field(
         default="whisper", description="ASR provider (whisper, alibaba)"
     )
-    tts_provider: str = Field(default="edge", description="TTS provider (edge, alibaba)")
+    tts_provider: str = Field(
+        default="edge", description="TTS provider (edge, alibaba)"
+    )
     llm_provider: str = Field(
         default="alibaba", description="LLM provider (alibaba, openai)"
     )
-    
+
     # Chat Configuration
     system_prompt: Optional[str] = Field(
-        default=None, 
-        description="Custom system prompt for the AI conversation coach. If not set, uses default professional coach prompt."
+        default=None,
+        description="Custom system prompt for the AI conversation coach. If not set, uses default professional coach prompt.",
     )
     max_history_length: int = Field(
-        default=20, 
-        description="Maximum number of conversation messages to keep in history"
+        default=20,
+        ge=3,
+        description="Maximum retained conversation messages, including the system prompt and complete turns",
     )
     session_timeout: int = Field(
-        default=3600, 
-        description="Chat session timeout in seconds (default: 1 hour)"
+        default=3600,
+        gt=0,
+        description="Chat session timeout in seconds (default: 1 hour)",
     )
+    max_sessions: int = Field(default=1000, ge=1, le=100000)
+    api_max_pending: int = Field(default=8, ge=1, le=64)
+    api_shutdown_timeout: float = Field(default=10, ge=0, le=60)
+    generated_audio_ttl: float = Field(default=3600, gt=0, le=604800)
+    generated_audio_max_files: int = Field(default=256, ge=1, le=100000)
+    generated_audio_max_bytes: int = Field(default=64 * 1024 * 1024, ge=1024)
 
     # TTS Configuration
     edge_tts_voice: str = Field(
@@ -115,16 +144,20 @@ class Settings(BaseSettings):
     )
     edge_tts_rate: str = Field(default="+0%", description="Edge TTS speech rate")
     edge_tts_volume: str = Field(default="+0%", description="Edge TTS volume")
-    
+
     # Alibaba TTS Configuration
     alibaba_tts_voice: str = Field(
-        default="longxiaochun", description="Alibaba TTS voice (longxiaochun for cosyvoice-v1)"
+        default="longxiaochun",
+        description="Alibaba TTS voice (longxiaochun for cosyvoice-v1)",
     )
     alibaba_tts_volume: int = Field(
         default=50, ge=0, le=100, description="Alibaba TTS volume (0-100)"
     )
     alibaba_tts_speech_rate: float = Field(
-        default=1.0, ge=0.5, le=2.0, description="CosyVoice speech rate multiplier (0.5-2.0)"
+        default=1.0,
+        ge=0.5,
+        le=2.0,
+        description="CosyVoice speech rate multiplier (0.5-2.0)",
     )
     alibaba_tts_pitch_rate: float = Field(
         default=1.0, ge=0.5, le=2.0, description="CosyVoice pitch multiplier (0.5-2.0)"
@@ -385,14 +418,18 @@ class Settings(BaseSettings):
             "appkey": self.aliyun_asr_app_key,
             "token": self.aliyun_asr_token,
             "access_key_id": self.aliyun_asr_access_key_id or self.alibaba_api_key,
-            "access_key_secret": self.aliyun_asr_access_key_secret or self.alibaba_api_secret,
+            "access_key_secret": self.aliyun_asr_access_key_secret
+            or self.alibaba_api_secret,
         }
 
     def has_aliyun_asr_credentials(self) -> bool:
         config = self.get_aliyun_asr_config()
         return bool(
             config["appkey"]
-            and (config["token"] or (config["access_key_id"] and config["access_key_secret"]))
+            and (
+                config["token"]
+                or (config["access_key_id"] and config["access_key_secret"])
+            )
         )
 
     def get_configuration_errors(self) -> list[str]:
@@ -404,7 +441,9 @@ class Settings(BaseSettings):
                 "or ALIYUN_ASR_ACCESS_KEY_ID + ALIYUN_ASR_ACCESS_KEY_SECRET "
                 "(legacy ALIBABA_API_KEY + ALIBABA_API_SECRET are also accepted)."
             )
-        if (self.llm_provider == "alibaba" or self.tts_provider == "alibaba") and not self.get_dashscope_api_key():
+        if (
+            self.llm_provider == "alibaba" or self.tts_provider == "alibaba"
+        ) and not self.get_dashscope_api_key():
             errors.append(
                 "Alibaba LLM/TTS requires DASHSCOPE_API_KEY "
                 "(legacy ALIBABA_API_KEY is also accepted); no ASR secret is required."

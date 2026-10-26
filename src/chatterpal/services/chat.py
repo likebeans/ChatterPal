@@ -6,10 +6,13 @@
 
 from typing import Optional, Dict, Any, List, Union, Tuple
 import logging
+import math
 import uuid
 import time
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from functools import wraps
 from threading import RLock
 
 from ..core.asr.base import ASRBase, ASRError
@@ -20,10 +23,24 @@ from ..core.errors import (
     SpeechSynthesisError, TopicGenerationError as TopicGenError
 )
 from ..utils.encoding_fix import safe_str
+from ..learning.observability import RuntimeMetrics, safe_error_type
 from .topic_generator import TopicGenerator, TopicGenerationError
+from .session_store import SessionStore
 
 
 logger = logging.getLogger(__name__)
+
+
+def _timed_chat(stage):
+    def decorate(method):
+        @wraps(method)
+        def measured(self, *args, **kwargs):
+            with self.metrics.measure(stage):
+                return method(self, *args, **kwargs)
+
+        return measured
+
+    return decorate
 
 
 @dataclass(frozen=True)
@@ -34,12 +51,26 @@ class AudioChatResult:
     response_text: str
     response_audio: Optional[bytes]
     session_id: str
+    response_audio_format: Optional[str] = None
+    response_audio_sample_rate: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class _SynthesisAudio:
+    data: bytes
+    format: Optional[str] = None
+    sample_rate: Optional[int] = None
 
 
 class ChatSession:
     """对话会话类，管理单个用户的对话状态"""
 
-    def __init__(self, session_id: str = None, system_prompt: str = None):
+    def __init__(
+        self,
+        session_id: str = None,
+        system_prompt: str = None,
+        max_history_length: int = 20,
+    ):
         """
         初始化对话会话
 
@@ -53,17 +84,35 @@ class ChatSession:
         self.last_activity = datetime.now()
         self.metadata = {}
         self.lock = RLock()
+        self.max_history_length = max_history_length
+
+    def trim_history(self) -> None:
+        """Keep the system prompt and recent complete turns within the budget."""
+        with self.lock:
+            messages = self.conversation.messages
+            if len(messages) <= self.max_history_length:
+                return
+            system = [message for message in messages if message.role == "system"][:1]
+            recent = [message for message in messages if message.role != "system"]
+            budget = self.max_history_length - len(system)
+            recent = recent[-budget:] if budget > 0 else []
+            # Never retain the dangling assistant half of an evicted turn.
+            if recent and recent[0].role == "assistant" and len(recent) > 1:
+                recent = recent[1:]
+            self.conversation.messages[:] = system + recent
 
     def add_user_message(self, content: str, **kwargs) -> None:
         """添加用户消息"""
         with self.lock:
             self.conversation.add_user_message(content, **kwargs)
+            self.trim_history()
             self.last_activity = datetime.now()
 
     def add_assistant_message(self, content: str, **kwargs) -> None:
         """添加助手消息"""
         with self.lock:
             self.conversation.add_assistant_message(content, **kwargs)
+            self.trim_history()
             self.last_activity = datetime.now()
 
     def get_messages(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -79,11 +128,13 @@ class ChatSession:
 
     def set_metadata(self, key: str, value: Any) -> None:
         """设置元数据"""
-        self.metadata[key] = value
+        with self.lock:
+            self.metadata[key] = value
 
     def get_metadata(self, key: str, default: Any = None) -> Any:
         """获取元数据"""
-        return self.metadata.get(key, default)
+        with self.lock:
+            return self.metadata.get(key, default)
 
 
 class ChatService:
@@ -163,6 +214,32 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         self.default_system_prompt = self.config.get("default_system_prompt", default_prompt)
         self.max_history_length = self.config.get("max_history_length", 20)
         self.session_timeout = self.config.get("session_timeout", 3600)  # 1小时
+        self.max_sessions = self.config.get("max_sessions", 1000)
+        if (
+            not isinstance(self.max_history_length, int)
+            or isinstance(self.max_history_length, bool)
+            or self.max_history_length < 3
+            or not isinstance(self.max_sessions, int)
+            or isinstance(self.max_sessions, bool)
+            or self.max_sessions < 1
+            or not isinstance(self.session_timeout, (int, float))
+            or isinstance(self.session_timeout, bool)
+            or not math.isfinite(self.session_timeout)
+            or self.session_timeout <= 0
+        ):
+            raise ValueError("Chat session limits must be positive; history requires at least 3 messages")
+        self.metrics = RuntimeMetrics()
+        self._session_store = SessionStore(self.max_sessions, self.session_timeout)
+        self.sessions = self._session_store.sessions
+
+    def runtime_snapshot(self) -> Dict[str, Any]:
+        """Return local resource counts and bounded timings without provider calls."""
+        return {
+            **self._session_store.snapshot(),
+            "max_history_length": self.max_history_length,
+            "session_timeout": self.session_timeout,
+            "metrics": self.metrics.snapshot(),
+        }
 
     def create_session(
         self, session_id: Optional[str] = None, system_prompt: Optional[str] = None
@@ -180,10 +257,10 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         if system_prompt is None:
             system_prompt = self.default_system_prompt
 
-        session = ChatSession(session_id, system_prompt)
-        self.sessions[session.session_id] = session
-
-        self.logger.info(f"创建新对话会话: {session.session_id}")
+        session = self._session_store.create(
+            lambda: ChatSession(session_id, system_prompt, self.max_history_length),
+            session_id,
+        )
         return session.session_id
 
     def get_session(self, session_id: str) -> Optional[ChatSession]:
@@ -196,7 +273,7 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         Returns:
             对话会话对象，如果不存在则返回None
         """
-        return self.sessions.get(session_id)
+        return self._session_store.get(session_id)
 
     def delete_session(self, session_id: str) -> bool:
         """
@@ -208,11 +285,7 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         Returns:
             是否成功删除
         """
-        if session_id in self.sessions:
-            del self.sessions[session_id]
-            self.logger.info(f"删除对话会话: {session_id}")
-            return True
-        return False
+        return self._session_store.delete(session_id)
 
     def cleanup_expired_sessions(self) -> int:
         """
@@ -221,22 +294,24 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         Returns:
             清理的会话数量
         """
-        current_time = datetime.now()
-        expired_sessions = []
+        return self._session_store.cleanup()
 
-        for session_id, session in self.sessions.items():
-            time_diff = (current_time - session.last_activity).total_seconds()
-            if time_diff > self.session_timeout:
-                expired_sessions.append(session_id)
+    def _session_lease(self, session_id=None):
+        return self._session_store.lease(
+            session_id,
+            lambda: ChatSession(None, self.default_system_prompt, self.max_history_length),
+        )
 
-        for session_id in expired_sessions:
-            del self.sessions[session_id]
+    @contextmanager
+    def _turn(self, session):
+        with self.metrics.measure("chat_queue"):
+            session.lock.acquire()
+        try:
+            yield
+        finally:
+            session.lock.release()
 
-        if expired_sessions:
-            self.logger.info(f"清理过期会话: {len(expired_sessions)}个")
-
-        return len(expired_sessions)
-
+    @_timed_chat("chat_text")
     def chat_with_text(
         self, text: str, session_id: Optional[str] = None, **kwargs
     ) -> Tuple[str, str]:
@@ -257,33 +332,27 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         if not self.llm:
             raise LLMError("LLM模块未初始化")
 
-        # 获取或创建会话
-        if session_id is None:
-            session_id = self.create_session()
-
-        session = self.get_session(session_id)
-        if session is None:
-            session_id = self.create_session()
-            session = self.get_session(session_id)
-
-        # 同一会话按完整轮次更新历史；不同会话可以并行调用LLM。
-        with session.lock:
-            message_count = len(session.conversation.messages)
+        # Pin before waiting for a turn; TTL/admission cannot detach queued work.
+        with self._session_lease(session_id) as session, self._turn(session):
+            session_id = session.session_id
+            committed_messages = session.conversation.messages[:]
             try:
                 session.add_user_message(text)
                 messages = session.get_messages(self.max_history_length)
-                response = self.llm.chat(messages, **kwargs)
+                with self.metrics.measure("llm"):
+                    response = self.llm.chat(messages, **kwargs)
                 session.add_assistant_message(response)
 
-                self.logger.info(f"文本对话完成 - 会话: {session_id}")
+                self.logger.info("文本对话完成")
                 return response, session_id
 
-            except Exception as e:
-                # 失败的轮次不应留下未配对的用户消息，影响后续上下文。
-                del session.conversation.messages[message_count:]
-                error_msg = safe_str(e)
-                self.logger.error(f"文本对话失败: {error_msg}")
-                raise LLMError(f"文本对话失败: {error_msg}") from e
+            except BaseException as error:
+                # Restore the exact committed pairs even if trimming or cancellation ran.
+                session.conversation.messages[:] = committed_messages
+                if not isinstance(error, Exception):
+                    raise
+                self.logger.error("文本对话失败 (%s)", safe_error_type(error))
+                raise LLMError(f"文本对话失败: {safe_str(error)}") from error
 
     def chat_with_audio(
         self,
@@ -291,20 +360,24 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
         session_id: Optional[str] = None,
         return_audio: bool = True,
         max_retries: int = 3,
+        tts_options: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> Tuple[str, Optional[bytes], str]:
         """兼容原接口，返回(回复文本, 回复音频或None, 会话ID)。"""
         result = self.chat_with_audio_result(
-            audio_data, session_id, return_audio, max_retries, **kwargs
+            audio_data, session_id, return_audio, max_retries,
+            tts_options=tts_options, **kwargs
         )
         return result.response_text, result.response_audio, result.session_id
 
+    @_timed_chat("chat_audio")
     def chat_with_audio_result(
         self,
         audio_data: Union[str, bytes, Tuple[int, Any]],
         session_id: Optional[str] = None,
         return_audio: bool = True,
         max_retries: int = 3,
+        tts_options: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> AudioChatResult:
         """
@@ -330,122 +403,110 @@ Remember: Your goal is to make English practice enjoyable and confidence-buildin
             raise error_handler.create_error("ASR_SERVICE_ERROR", message="ASR模块未初始化")
 
         try:
-            # 使用增强的语音识别（带错误处理和重试）
-            try:
-                asr_result = self.asr.recognize_with_error_handling(
-                    audio_data, max_retries=max_retries, **kwargs
+            # Keep the same session attached through ASR, its queued LLM turn and TTS.
+            with self._session_lease(session_id) as session:
+                with self.metrics.measure("asr"):
+                    try:
+                        asr_result = self.asr.recognize_with_error_handling(
+                            audio_data, max_retries=max_retries, **kwargs
+                        )
+                    except ChatModuleError:
+                        raise
+                    except Exception as error:
+                        raise error_handler.handle_asr_exception(error) from error
+                    recognized_text = asr_result.text
+                    if not recognized_text:
+                        raise error_handler.create_error("ASR_NO_SPEECH")
+
+                self.logger.info("语音识别完成")
+                response_text, session_id = self.chat_with_text(
+                    recognized_text, session.session_id, **kwargs
                 )
-            except ChatModuleError:
-                raise
-            except Exception as e:
-                raise error_handler.handle_asr_exception(e) from e
-            
-            recognized_text = asr_result.text
-            if not recognized_text:
-                raise error_handler.create_error("ASR_NO_SPEECH")
+                synthesized = None
+                if return_audio and self.tts:
+                    synthesized = self._synthesize_audio_with_error_handling(
+                        response_text, tts_options=tts_options
+                    )
 
-            self.logger.info(f"语音识别结果: {recognized_text} (置信度: {asr_result.confidence:.2f})")
-
-            # 文本对话
-            response_text, session_id = self.chat_with_text(
-                recognized_text, session_id, **kwargs
-            )
-
-            # 语音合成（如果需要）
-            response_audio = None
-            if return_audio and self.tts:
-                response_audio = self._synthesize_with_error_handling(response_text)
-
-            return AudioChatResult(
-                recognized_text=recognized_text,
-                response_text=response_text,
-                response_audio=response_audio,
-                session_id=session_id,
-            )
+                return AudioChatResult(
+                    recognized_text=recognized_text,
+                    response_text=response_text,
+                    response_audio=synthesized.data if synthesized else None,
+                    session_id=session_id,
+                    response_audio_format=synthesized.format if synthesized else None,
+                    response_audio_sample_rate=synthesized.sample_rate if synthesized else None,
+                )
 
         except (AudioInputError, SpeechRecognitionError, LLMError, SpeechSynthesisError):
-            # 重新抛出已知错误
             raise
-        except Exception as e:
-            self.logger.error(f"语音对话失败: {e}")
-            raise error_handler.create_error("ASR_SERVICE_ERROR", error_message=safe_str(e))
+        except Exception as error:
+            self.logger.error("语音对话失败 (%s)", safe_error_type(error))
+            raise error_handler.create_error(
+                "ASR_SERVICE_ERROR", error_message=safe_str(error)
+            ) from error
 
-    def _synthesize_with_error_handling(self, text: str, max_retries: int = 2) -> Optional[bytes]:
-        """
-        带错误处理的语音合成
-        
-        Args:
-            text: 要合成的文本
-            max_retries: 最大重试次数
-            
-        Returns:
-            合成的音频数据，失败时返回None
-        """
-        if not self.tts:
-            self.logger.warning("TTS实例为None，无法进行语音合成")
-            return None
-        
-        self.logger.info(f"开始语音合成 - TTS类型: {type(self.tts).__name__}")
-        
-        try:
-            # 使用TTS基类的增强错误处理方法
-            if hasattr(self.tts, 'synthesize_with_error_handling'):
-                self.logger.info("使用TTS增强错误处理方法")
-                result = self.tts.synthesize_with_error_handling(text, max_retries=max_retries)
-                self.logger.info(f"语音合成完成 (耗时: {result.synthesis_time:.2f}s, 缓存: {result.cached})")
-                return result.audio_data
-            else:
-                # 回退到基本方法
-                self.logger.info("回退到基本语音合成方法")
-                return self._basic_synthesize_with_retry(text, max_retries)
-                
-        except Exception as e:
-            # 语音合成失败不应阻止对话，记录错误并返回None
-            error = error_handler.create_error("TTS_SERVICE_ERROR", error_message=safe_str(e))
-            error_handler.log_error(error, {"text_length": len(text)})
-            self.logger.warning(f"语音合成失败，但对话将继续: {safe_str(e)}")
-            return None
+    def _synthesize_with_error_handling(
+        self, text: str, max_retries: int = 2,
+        tts_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[bytes]:
+        """Keep the byte-only helper compatible with existing UI callers."""
+        result = self._synthesize_audio_with_error_handling(text, max_retries, tts_options)
+        return result.data if result else None
 
-    def _basic_synthesize_with_retry(self, text: str, max_retries: int) -> Optional[bytes]:
-        """
-        基本的语音合成重试方法（当TTS不支持增强错误处理时使用）
-        
-        Args:
-            text: 要合成的文本
-            max_retries: 最大重试次数
-            
-        Returns:
-            合成的音频数据，失败时返回None
-        """
-        last_error = None
+    def _synthesize_audio_with_error_handling(
+        self, text: str, max_retries: int = 2,
+        tts_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[_SynthesisAudio]:
+        """Preserve explicit encoding metadata without mutating shared providers."""
+        with self.metrics.measure("tts") as outcome:
+            if not self.tts:
+                outcome.status = "unavailable"
+                return None
+            try:
+                options = dict(tts_options or {})
+                if hasattr(self.tts, "synthesize_with_error_handling"):
+                    result = self.tts.synthesize_with_error_handling(
+                        text, max_retries=max_retries, **options
+                    )
+                    audio = result.audio_data
+                    audio_format = getattr(result, "format", None)
+                    sample_rate = getattr(result, "sample_rate", None)
+                    if not isinstance(audio_format, str):
+                        audio_format = None
+                    if isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0:
+                        sample_rate = None
+                else:
+                    audio = self._basic_synthesize_with_retry(text, max_retries, options)
+                    audio_format = sample_rate = None
+                if not audio:
+                    outcome.status = "failed"
+                    outcome.error = TTSError("Synthesis returned no audio")
+                    return None
+                self.logger.info("语音合成完成")
+                return _SynthesisAudio(audio, audio_format, sample_rate)
+            except Exception as error:
+                # A failed voice reply still returns the committed text turn.
+                outcome.status = "failed"
+                outcome.error = error
+                self.logger.warning("语音合成失败 (%s)", safe_error_type(error))
+                return None
+
+    def _basic_synthesize_with_retry(
+        self, text: str, max_retries: int,
+        tts_options: Optional[Dict[str, Any]] = None,
+    ) -> Optional[bytes]:
+        """Retry legacy providers with only this request's synthesis options."""
         for attempt in range(max_retries):
             try:
-                start_time = time.time()
-                response_audio = self.tts.synthesize(text)
-                processing_time = time.time() - start_time
-                
-                # 检查处理时间
-                if processing_time > 30:
-                    raise error_handler.create_error("TTS_TIMEOUT", processing_time=processing_time)
-                
-                self.logger.info(f"语音合成完成 (耗时: {processing_time:.2f}s)")
-                return response_audio
-                
-            except Exception as e:
-                last_error = error_handler.create_error("TTS_SERVICE_ERROR", 
-                                                      attempt=attempt + 1, 
-                                                      error_message=safe_str(e))
-                
+                start_time = time.perf_counter()
+                audio = self.tts.synthesize(text, **(tts_options or {}))
+                if time.perf_counter() - start_time > 30:
+                    raise error_handler.create_error("TTS_TIMEOUT")
+                return audio
+            except Exception as error:
+                self.logger.warning("语音合成失败 (%s)", safe_error_type(error))
                 if attempt < max_retries - 1:
-                    self.logger.warning(f"语音合成失败，重试 {attempt + 1}/{max_retries}: {e}")
                     time.sleep(0.5 * (attempt + 1))
-                    continue
-                else:
-                    # 最后一次尝试失败，记录错误
-                    error_handler.log_error(last_error, {"text_length": len(text)})
-                    self.logger.warning(f"语音合成最终失败: {last_error.error_info.message}")
-                    return None
-        
         return None
 
     def get_conversation_history(
@@ -687,16 +748,13 @@ Topics:"""
             "text_input_length": len(text_input) if text_input else 0
         }
         
+        session_scope = ExitStack()
         try:
-            # 获取或创建会话
-            if session_id is None:
-                session_id = self.create_session()
-            
-            session = self.get_session(session_id)
-            if session is None:
-                session_id = self.create_session()
-                session = self.get_session(session_id)
-            
+            # Keep Gradio's session attached through synthesis and history formatting.
+            session = session_scope.enter_context(self._session_lease(session_id))
+            session_scope.enter_context(session.lock)
+            session_id = session.session_id
+
             # 处理主题上下文
             if topic_context:
                 current_topic = session.get_metadata("current_topic")
@@ -717,7 +775,6 @@ Topics:"""
                 # 生成语音输出（如果TTS可用）
                 if self.tts:
                     self.logger.info(f"TTS实例可用，开始语音合成 - 文本长度: {len(response_text)}")
-                    self.logger.debug(f"待合成文本: {response_text[:100]}...")
                     audio_output = self._synthesize_with_error_handling(response_text)
                     if audio_output:
                         self.logger.info(f"语音合成成功 - 音频数据长度: {len(audio_output)} bytes")
@@ -842,6 +899,8 @@ Topics:"""
             error_msg = "抱歉，处理您的请求时出现了问题。请稍后重试。"
             input_display = user_input if user_input else (text_input or "语音输入")
             return (None, [[input_display, error_msg]])
+        finally:
+            session_scope.close()
 
     def _enhance_response_with_topic_context(self, response: str, topic: str, user_input: str) -> str:
         """
@@ -972,9 +1031,9 @@ Topics:"""
             if session_id is None:
                 # 清除所有会话
                 cleared_count = len(self.sessions)
-                self.sessions.clear()
-                self.logger.info(f"清除所有对话上下文，共 {cleared_count} 个会话")
-                return True
+                cleared = self._session_store.clear()
+                self.logger.info("清除空闲对话上下文")
+                return cleared
             else:
                 # 清除指定会话的上下文
                 session = self.get_session(session_id)

@@ -1,11 +1,24 @@
-# -*- coding: utf-8 -*-
-"""
-语音识别(ASR)模块
-提供统一的语音识别接口，支持多种ASR引擎
-"""
+"""ASR interfaces and optional engines, loaded independently."""
 
-from .base import ASRBase, ASRError
-from .whisper import WhisperASR
-from .aliyun import AliyunASR
+from importlib import import_module
 
-__all__ = ["ASRBase", "ASRError", "WhisperASR", "AliyunASR"]
+_EXPORTS = {
+    "ASRBase": ".base",
+    "ASRError": ".base",
+    "WhisperASR": ".whisper",
+    "AliyunASR": ".aliyun",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

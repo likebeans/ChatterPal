@@ -102,6 +102,9 @@ export const learningApi = {
     if (!items.every(isReview)) throw new LearningApiError('复习列表数据不完整，请重新加载。', 'invalid_response')
     return items
   },
+  async review(id: string, signal?: AbortSignal): Promise<LearningReview> {
+    return requireShape(await request('get', `/reviews/${encodeURIComponent(id)}`, undefined, signal), isReview)
+  },
   async progress(signal?: AbortSignal): Promise<LearningProgress> {
     return requireShape(await request('get', '/progress', undefined, signal), isProgress)
   },

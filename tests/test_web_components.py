@@ -200,7 +200,9 @@ class TestScoreTab:
                     "suggestions": ["Work on intonation"]}
         components.sdk.return_value.choices[0].message.content = json.dumps(analysis)
         result = rendered_text(components.score._evaluate_pronunciation(TRANSCRIPT, components.audio))
-        assert "85" in result
+        assert '85.0/100' not in result
+        assert '综合评分: 暂不可评估' in result
+        assert '识别文本一致度: 100.0%' in result
         assert "fluency" in result.lower() or "流畅" in result
 
     def test_generate_feedback_text(self, components):
@@ -274,14 +276,14 @@ class TestCorrectTab:
         report = components.correction_service.comprehensive_correction(
             components.audio, "hello", analysis_level="expert"
         )
-        problems = {problem["type"]: problem for problem in report.phoneme_problems}
-        assert "vowel_height_error" in problems
-        assert "vowel_backness_error" in problems
-        assert "1200" in problems["vowel_height_error"]["description"]
-        assert "3500" in problems["vowel_backness_error"]["description"]
+        assert report.phoneme_problems == []
+        assert '1200' in report.detailed_feedback
+        assert '3500' in report.detailed_feedback
+        assert '未进行音素对齐' in report.detailed_feedback
         result = correction_outputs(components, "hello")
-        for problem_type in ("vowel_height_error", "vowel_backness_error"):
-            assert problems[problem_type]["description"] in result[3]
+        assert '1200' in result[1]
+        assert '3500' in result[1]
+        assert '音素分析不可用' in result[3]
 
     def test_generate_improvement_suggestions(self, components):
         result = correction_outputs(components)

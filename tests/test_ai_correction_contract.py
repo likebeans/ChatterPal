@@ -11,7 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from chatterpal.core.assessment.base import AssessmentError
-from chatterpal.services.ai_correction import AICorrectionService, DifficultyLevel
+from chatterpal.services.ai_correction import AICorrectionService
 from chatterpal.services.correction import CorrectionService
 
 
@@ -43,10 +43,12 @@ def analyze(service):
 
 def test_unconfigured_ai_preserves_basic_result_and_labels_the_fallback(service):
     result = analyze(service)
-    assert result.overall_score == 75.0
+    assert result.overall_score is None
+    assert result.dimensions['overall']['status'] == 'unavailable'
     assert result.recognized_text == "I has a cat"
-    assert result.difficulty_assessment == DifficultyLevel.INTERMEDIATE
-    assert result.confidence_score == 0.0
+    assert result.difficulty_assessment is None
+    assert result.confidence_score is None
+    assert result.dimensions['confidence']['status'] == 'unavailable'
     assert result.grammar_corrections == result.pronunciation_feedback == []
     assert "基础分析" in result.detailed_analysis
     assert "未配置" in result.detailed_analysis
@@ -115,7 +117,8 @@ def test_ai_prompts_reach_provider_and_internal_fields_map_to_http_contract(serv
     assert feedback["corrected"] == "Practice a short vowel"
     assert feedback["explanation"] == "Check the vowel"
     assert result.recognized_text == "I has a cat"
-    assert result.confidence_score > 0
+    assert result.confidence_score is None
+    assert result.dimensions['ai_feedback']['status'] == 'estimated'
 
 
 @pytest.mark.parametrize(
@@ -134,8 +137,10 @@ def test_invalid_ai_data_returns_explicit_basic_fallback(service, payload):
     )
     result = analyze(service)
     assert result.recognized_text == "I has a cat"
-    assert result.overall_score == 75.0
-    assert result.confidence_score == 0.0
+    assert result.overall_score is None
+    assert result.dimensions['overall']['status'] == 'unavailable'
+    assert result.confidence_score is None
+    assert result.dimensions['confidence']['status'] == 'unavailable'
     assert result.grammar_corrections == result.pronunciation_feedback == []
     assert "基础分析" in result.detailed_analysis
     assert "不可用" in result.detailed_analysis
@@ -164,7 +169,8 @@ def test_invalid_pronunciation_response_falls_back_after_valid_grammar(
     result = analyze(service)
     assert service.model.generate_content.call_count == 2
     assert result.recognized_text == "I has a cat"
-    assert result.confidence_score == 0.0
+    assert result.confidence_score is None
+    assert result.dimensions['confidence']['status'] == 'unavailable'
     assert "基础分析" in result.detailed_analysis
     assert "不可用" in result.detailed_analysis
 
@@ -179,7 +185,8 @@ def test_service_without_asr_never_claims_ai_success():
     result = analyze(service)
     service.model.generate_content.assert_not_called()
     assert result.recognized_text == ""
-    assert result.confidence_score == 0.0
+    assert result.confidence_score is None
+    assert result.dimensions['confidence']['status'] == 'unavailable'
     assert "识别文本不可用" in result.detailed_analysis
     assert "AI驱动" not in result.detailed_analysis
 
@@ -190,8 +197,10 @@ def test_ai_provider_failure_does_not_discard_the_basic_report(service):
     )
     result = analyze(service)
     assert result.recognized_text == "I has a cat"
-    assert result.overall_score == 75.0
-    assert result.confidence_score == 0.0
+    assert result.overall_score is None
+    assert result.dimensions['overall']['status'] == 'unavailable'
+    assert result.confidence_score is None
+    assert result.dimensions['confidence']['status'] == 'unavailable'
     assert "不可用" in result.detailed_analysis
 
 
@@ -228,7 +237,8 @@ def test_sync_ai_provider_runs_outside_event_loop(service):
             await asyncio.gather(pending, return_exceptions=True)
 
     result = asyncio.run(request())
-    assert result.confidence_score > 0
+    assert result.confidence_score is None
+    assert result.dimensions['ai_feedback']['status'] == 'estimated'
     assert threads and all(thread != loop_thread for thread in threads)
 
 

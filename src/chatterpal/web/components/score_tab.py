@@ -25,7 +25,7 @@ class ScoreTab:
 
                 **报告内容：**
                 - 目标文本与语音识别结果
-                - 服务返回的发音、流畅度、韵律和内容参考评分
+                - 识别文本一致度及其来源；未测量的发音、流畅度和韵律会标为不可评估
                 - 分析反馈与练习建议；缺失的分析会明确标注
                 
                 **使用方法：**
@@ -67,9 +67,9 @@ class ScoreTab:
                     """
                     ### 参考评分说明
 
-                    服务报告使用 0–100 分。当前评分尚未经过校准，
-                    部分数值可能来自文本对比、模型推断或后端默认值，
-                    不能据此判断真人发音水平或认定达到母语水平。
+                    识别文本一致度以百分比展示有序词编辑对齐结果，可能受识别错误影响。
+                    发音、流畅度、韵律和综合评分未校准，暂不可评估。
+                    语言模型仅提供文字练习建议，不能判断真人发音水平或进步。
                     未提供的音素或声学分析会标为不可用；没有问题条目不代表没有问题。
                     """
                 )
@@ -99,23 +99,26 @@ class ScoreTab:
             )
 
             lines = [
-                "参考评分（未校准，仅供练习参考；可能包含模型推断或默认值）",
+                "练习反馈（能力评分未校准）", result.scope,
                 f"目标文本: {result.target_text}",
                 f"识别文本: {result.recognized_text}",
-                f"综合评分: {result.overall_score:.1f}/100",
-                f"发音准确性: {result.pronunciation_score:.1f}/100",
-                f"流畅度: {result.fluency_score:.1f}/100",
-                f"韵律: {result.prosody_score:.1f}/100",
-                f"内容准确性: {result.accuracy_score:.1f}/100",
-                "\n服务反馈:",
-                result.feedback or "暂无反馈",
-                "\n改进建议:",
-                *(f"- {suggestion}" for suggestion in result.suggestions),
+                "综合评分: 暂不可评估", "发音准确性: 暂不可评估",
+                "流畅度: 暂不可评估", "韵律: 暂不可评估",
             ]
+            accuracy = result.dimensions.get("accuracy", {})
+            if accuracy.get("source") == "text_sequence_alignment" and accuracy.get("score") is not None:
+                lines.append(f"识别文本一致度: {accuracy['score']:.1f}%（有序词编辑对齐，非声学发音准确率）")
+            else:
+                lines.append("识别文本一致度: 暂不可评估")
+            lines.extend(f"{name}: {item['reason']}（来源：{item['source']}）" for name, item in result.dimensions.items())
+            lines.extend([
+                "\n服务反馈:", result.feedback or "暂无反馈", "\n改进建议:",
+                *(f"- {suggestion}" for suggestion in result.suggestions),
+            ])
             if self.evaluation_service.assessment is None:
                 lines.append("\n声学分析不可用：未配置声学评估模块。")
             if result.phoneme_analysis:
-                lines.extend(["\n音素分析:", *(
+                lines.extend(["\n录音声学摘要（未进行音素对齐）:", *(
                     f"- {item.phoneme}: {item.description}"
                     for item in result.phoneme_analysis
                 )])

@@ -26,6 +26,64 @@ async function prepareAI() {
 }
 
 describe('pronunciation API contracts and recovery', () => {
+  it('accepts explicit unknown scores and shows evidence scope without numerical meters', async () => {
+    vi.spyOn(axios, 'post').mockResolvedValue({ data: {
+      ...aiResult,
+      overall_score: null,
+      confidence_score: null,
+      difficulty_level: null,
+      next_scenario: null,
+      calibrated: false,
+      scope: '仅识别文本对齐；未校准，不能判断音素准确率。',
+      dimensions: {
+        pronunciation: { score: null, status: 'unavailable', source: 'none', reason: '尚未进行声学音素对齐', evidence: {}, unit: null, calibrated: false },
+        accuracy: { score: 75, status: 'measured', source: 'text_sequence_alignment', reason: '识别文本与参考文本的序列匹配', evidence: { deletions: 1 }, unit: 'percent', calibrated: false },
+      },
+    } })
+    const { container } = render(<PronunciationCorrection />)
+    await prepareAI()
+    analyze()
+    expect(await screen.findByText(aiResult.recognized_text, { selector: 'p' })).toBeVisible()
+    expect(screen.getByText('尚未进行声学音素对齐')).toBeVisible()
+    expect(screen.getByText('仅识别文本对齐；未校准，不能判断音素准确率。')).toBeVisible()
+    expect(screen.getByText(/文本序列匹配.*75/)).toBeVisible()
+    expect(container.querySelector('.score-circle, .confidence-score, .difficulty-level')).toBeNull()
+    expect(screen.queryByRole('meter')).not.toBeInTheDocument()
+  })
+
+  it('rejects nonfinite nested evidence instead of displaying a misleading measured result', async () => {
+    vi.spyOn(axios, 'post').mockResolvedValue({ data: { ...basicResult, dimensions: {
+      accuracy: { score: 95, status: 'measured', source: 'text_sequence_alignment', reason: 'Text only', evidence: { edit_distance: NaN }, calibrated: false },
+    } } })
+    render(<PronunciationCorrection />)
+    reference()
+    await recordPronunciation()
+    analyze()
+    expect(await screen.findByRole('alert')).toHaveTextContent('服务返回的数据不完整')
+    expect(screen.queryByText(basicResult.recognized_text, { selector: 'p' })).not.toBeInTheDocument()
+  })
+
+  it('hides legacy scores and ability labels when their measurement evidence is absent', async () => {
+    vi.spyOn(axios, 'post').mockResolvedValue({ data: aiResult })
+    const { container } = render(<PronunciationCorrection />)
+    await prepareAI()
+    analyze()
+    await screen.findByText(aiResult.recognized_text, { selector: 'p' })
+    expect(container.querySelector('.score-circle, .confidence-score, .difficulty-level')).toBeNull()
+    expect(screen.getByText(/服务未提供测量依据/)).toBeVisible()
+  })
+
+  it.each([NaN, Infinity, -1, 101])('rejects invalid numeric output %s and retains the recording for retry', async invalid => {
+    vi.spyOn(axios, 'post').mockResolvedValueOnce({ data: { ...basicResult, overall_score: invalid } }).mockResolvedValue({ data: { ...basicResult, overall_score: null } })
+    render(<PronunciationCorrection />)
+    reference()
+    await recordPronunciation()
+    analyze()
+    expect(await screen.findByRole('alert')).toHaveTextContent('服务返回的数据不完整')
+    analyze()
+    expect(await screen.findByText(basicResult.recognized_text, { selector: 'p' })).toBeVisible()
+  })
+
   it('clears a failed scenario context when choosing no scenario', async () => {
     vi.mocked(axios.get).mockImplementation(url => url === '/api/scenarios' ? Promise.resolve({ data: scenarios }) : Promise.reject(new Error('Offline')))
     render(<PronunciationCorrection />)

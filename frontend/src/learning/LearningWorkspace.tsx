@@ -3,12 +3,12 @@ import { useAudioPlayback } from '../hooks/useAudioPlayback'
 import { submissionBody } from './client'
 import type { LearningApi } from './client'
 import { PracticeInput } from './PracticeInput'
-import { isAudio, isHint, isReviewResult } from './validation'
+import { isAudio, isHint, isReviewHint, isReviewResult, isReviewReveal } from './validation'
 import { useLearningFlow } from './useLearningFlow'
 import { practiceDraftKey, usePracticeDrafts } from './usePracticeDrafts'
 import type { LearningView } from './useLearningFlow'
 import type {
-  LearningAudio, LearningCoaching, LearningFocus, LearningProfile, LearningReview, LearningSession,
+  LearningAudio, LearningCoaching, LearningFocus, LearningProfile, LearningSession,
   LearningSubmission, LearningTurn, PracticeMode,
 } from './types'
 import './learning.css'
@@ -18,7 +18,6 @@ const labels: Array<{ id: LearningView; label: string }> = [
   { id: 'review', label: '到期复习' }, { id: 'progress', label: '练习进度' }, { id: 'settings', label: '学习设置' },
 ]
 function date(value: string) { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? '时间暂不可用' : parsed.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
-function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' }
 const stateLabel = { met: '已找到完成证据', not_met: '还可以再练', unverified: '尚不能确认' }
 const sourceLabel = { text: '文字依据', acoustic: '声学依据', model: 'AI 建议', self_report: '个人自评' }
 
@@ -73,7 +72,8 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
   const playback = useAudioPlayback(active)
   const [speed, setSpeed] = useState(1)
   const [practiceBySession, setPracticeBySession] = useState<Record<string, { turnId: string; focusId: string | null; mode: PracticeMode } | null>>({})
-  const [review, setReview] = useState<LearningReview | null>(null)
+  const review = flow.selectedReview
+  const setReview = flow.setSelectedReview
   const [exampleAttemptId, setExampleAttemptId] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [exportError, setExportError] = useState('')
@@ -95,7 +95,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
   const inSession = active && flow.view === 'session'
   const play = (source: string, id: string) => { void playback.play(source, id, speed) }
   useEffect(() => { playback.stop() }, [session?.session_id, playback.stop])
-  useEffect(() => { playback.stop(); setPracticeBySession({}); setReview(null); setExampleAttemptId(null); setDeleteConfirm(false) }, [owner, playback.stop])
+  useEffect(() => { playback.stop(); setPracticeBySession({}); setReview(null); setExampleAttemptId(null); setDeleteConfirm(false) }, [owner, playback.stop, setReview])
   useEffect(() => { if (active) focusHeading.current?.focus() }, [flow.view, active])
   useEffect(() => { if (playback.audioRef.current) playback.audioRef.current.playbackRate = speed }, [speed, playback.audioRef])
   const chooseView = (view: LearningView) => { playback.stop(); flow.setView(view) }
@@ -130,8 +130,14 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
     && flow.lastOperation.result.review_item_id === review?.review_item_id ? flow.lastOperation.result : null
   const exampleAudio = exampleAttemptId === exampleAttempt?.attempt_id && flow.lastOperation?.result_type === 'audio'
     && isAudio(flow.lastOperation.result) ? flow.lastOperation.result : undefined
-  const revealedAnswer = flow.lastOperation?.result_type === 'review' && record(flow.lastOperation.result)
-    && flow.lastOperation.result.review_item_id === review?.review_item_id && typeof flow.lastOperation.result.answer === 'string' ? flow.lastOperation.result.answer : null
+  const revealedAnswer = flow.lastOperation?.result_type === 'review_reveal' && isReviewReveal(flow.lastOperation.result)
+    && flow.lastOperation.result.review_item_id === review?.review_item_id && flow.lastOperation.result.cycle === review.cycle ? flow.lastOperation.result.answer : null
+  const reviewHint = flow.lastOperation?.result_type === 'review_hint' && isReviewHint(flow.lastOperation.result)
+    && flow.lastOperation.result.review_item_id === review?.review_item_id && flow.lastOperation.result.cycle === review.cycle ? flow.lastOperation.result.hint : null
+  const saveReview = (sourceTurnId: string, focusId: string | null, attemptId?: string) => {
+    if (!session) return
+    void perform('save-review', '/reviews', { session_id: session.session_id, source_revision: session.revision, source_turn_id: sourceTurnId, focus_id: focusId, ...(attemptId ? { attempt_id: attemptId } : {}) })
+  }
 
   return <div className="learning-workspace">
     <div className="learning-heading"><div><p className="learning-eyebrow">每天练会一个表达</p><h2 ref={focusHeading} tabIndex={-1}>把今天说的话，变成下次会用的表达</h2></div>
@@ -181,7 +187,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
           {session.feedback.strength && <p><strong>做得好的表达：</strong>{session.feedback.strength}</p>}
           <p className="learning-muted">{session.feedback.reason || (session.feedback.status === 'unavailable' ? '本次暂时不能完成评估。' : '反馈基于本次表达，不代表已完成发音评分。')}</p>
           {session.feedback.criteria.map(item => <div className="learning-criterion" key={item.criterion_id}><strong>{item.description}</strong><span>{stateLabel[item.result]}</span>{item.evidence && <p>依据：{item.evidence}</p>}</div>)}
-          {session.feedback.focuses.slice(0, 2).map(focus => <article className="learning-focus" key={focus.focus_id}><span className="learning-muted">{sourceLabel[focus.source]}</span><p lang="en">{focus.original}</p><p lang="en"><strong>{focus.suggested}</strong></p><p>{focus.explanation}</p><div className="learning-actions"><button type="button" className="learning-primary" onClick={() => { const turn = session.turns.find(item => item.turn_id === focus.source_turn_id); if (turn) practiceTurn(turn, focus) }}>针对这一句重练</button><span className="learning-muted">复习安排尚未接入，可先从学习记录继续重练。</span></div></article>)}
+          {session.feedback.focuses.slice(0, 2).map(focus => <article className="learning-focus" key={focus.focus_id}><span className="learning-muted">{sourceLabel[focus.source]}</span><p lang="en">{focus.original}</p><p lang="en"><strong>{focus.suggested}</strong></p><p>{focus.explanation}</p><div className="learning-actions"><button type="button" className="learning-primary" onClick={() => { const turn = session.turns.find(item => item.turn_id === focus.source_turn_id); if (turn) practiceTurn(turn, focus) }}>针对这一句重练</button><button type="button" disabled={busy} onClick={() => saveReview(focus.source_turn_id, focus.focus_id)}>保存这个表达到复习</button></div></article>)}
         </section>}
         {practice && <section className="learning-practice" aria-label="单句重练"><header className="learning-inline"><h4>把这一句再说一次</h4><button type="button" onClick={() => { playback.stop(); setPractice(null) }}>返回任务对话</button></header>
           <p className="learning-muted">原句、首次尝试和每次重练都会保留，方便对照。文字差异不等于发音错误。</p>
@@ -192,22 +198,32 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
           {exampleAudio && <AudioButton audio={exampleAudio} id={`example-${exampleAttemptId}`} label="播放目标范读" onPlay={play} />}
           <div className="learning-attempts">{practiceAttempts.map((attempt, index) => {
             const parentIndex = practiceAttempts.findIndex(item => item.attempt_id === attempt.parent_attempt_id)
-            return <article key={attempt.attempt_id}><h5>{index === 0 ? '第一次练习' : `第 ${index + 1} 次练习`}</h5><p className="learning-muted">{attempt.parent_attempt_id ? `重练 · 接续${parentIndex >= 0 ? `第 ${parentIndex + 1} 次练习` : '此前的尝试'}` : '首次尝试 · 关联任务原话'}</p><p lang="en">{attempt.transcript}</p><p>{stateLabel[attempt.evaluation.result]} · {sourceLabel[attempt.evaluation.source]}</p><p>{attempt.evaluation.reason}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label={`回放第 ${index + 1} 次练习`} onPlay={play} /></article>
+            return <article key={attempt.attempt_id}><h5>{index === 0 ? '第一次练习' : `第 ${index + 1} 次练习`}</h5><p className="learning-muted">{attempt.parent_attempt_id ? `重练 · 接续${parentIndex >= 0 ? `第 ${parentIndex + 1} 次练习` : '此前的尝试'}` : '首次尝试 · 关联任务原话'}</p><p lang="en">{attempt.transcript}</p><p>{stateLabel[attempt.evaluation.result]} · {sourceLabel[attempt.evaluation.source]}</p><p>{attempt.evaluation.reason}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label={`回放第 ${index + 1} 次练习`} onPlay={play} /><button type="button" disabled={busy} onClick={() => saveReview(attempt.source_turn_id, attempt.focus_id, attempt.attempt_id)}>保存这次尝试到复习</button></article>
           })}</div>
           <PracticeInput key={attemptDraftKey} draft={drafts.read(attemptDraftKey)} onDraftChange={changes => drafts.update(attemptDraftKey, changes)} active={inSession} disabled={busy} label={practice.mode === 'read_aloud' ? '我的跟读' : '我的新表达'} submitLabel={lastAttempt ? '保存这次重练' : '提交这次练习'} onSubmit={submitAttempt} onPlay={play} onStopPlayback={playback.stop} />
         </section>}
       </section>}
       {flow.view === 'review' && <section className="learning-section"><h3>先想一想，再开口</h3>
-        {flow.reviewUnavailable ? <p role="status">{flow.reviewUnavailable}</p> : <p>先在新问题里使用这个表达，需要时再看提示。看过答案的尝试会单独记录。</p>}
-        {!flow.reviewUnavailable && !review && (flow.reviews.length ? <ul className="learning-history">{flow.reviews.map(item => <li key={item.review_item_id}><div><strong>{item.prompt}</strong><p>{date(item.due_at)} 到期</p></div><button type="button" onClick={() => { playback.stop(); setReview(item) }}>开始这项复习</button></li>)}</ul> : <p>目前没有可显示的复习记录。可以先从学习记录继续重练。</p>)}
-        {!flow.reviewUnavailable && review && <div className="learning-practice"><h4>{review.prompt}</h4><div className="learning-actions"><button type="button" onClick={() => { playback.stop(); setReview(null) }}>返回复习列表</button><button type="button" disabled={busy} onClick={() => { void perform('reveal', `/reviews/${encodeURIComponent(review.review_item_id)}/reveal`, {}, review.session_id) }}>显示参考表达并记录提示</button></div>
-          {revealedAnswer && <p className="learning-target" lang="en">{revealedAnswer}</p>}
-          {selectedReviewResult?.attempt && <div role="status"><p>{stateLabel[selectedReviewResult.attempt.evaluation.result]}：{selectedReviewResult.attempt.evaluation.reason}</p><p>{selectedReviewResult.used_hint ? '本次使用了参考表达，按有提示练习记录。' : '本次提示使用情况由服务端记录。'}</p>{selectedReviewResult.next_due_at && <p>下次复习：{date(selectedReviewResult.next_due_at)}</p>}</div>}
-          <PracticeInput key={reviewDraftKey} draft={drafts.read(reviewDraftKey)} onDraftChange={changes => drafts.update(reviewDraftKey, changes)} active={active && flow.view === 'review'} disabled={busy} label="我的复习回答" submitLabel="提交复习回答" onSubmit={submission => flow.mutate('review', `/reviews/${encodeURIComponent(review.review_item_id)}/attempts`, submissionBody({ text: submission.text }, submission.audio), review.session_id, { draft_key: reviewDraftKey, draft_version: drafts.read(reviewDraftKey).version })} onPlay={play} onStopPlayback={playback.stop} />
+        {flow.reviewUnavailable ? <p role="status">{flow.reviewUnavailable}</p> : <p>到期后先回答新问题，需要时再看提示。原句复述、看过答案和重复问题的练习会分别记录。</p>}
+        {!flow.reviewUnavailable && !review && (flow.reviews.length ? <ul className="learning-history">{flow.reviews.map(item => <li key={item.review_item_id}><div><strong>{item.prompt || '等待到期的新问题'}</strong><p>{date(item.due_at)} 到期</p>{!item.independent_variant_available && <p className="learning-muted">新问题已用完，可以继续重复练习。</p>}</div><button type="button" onClick={() => { playback.stop(); setReview(item) }}>开始这项复习</button></li>)}</ul> : <p>当前没有到期复习。可以从练后反馈或已保存的尝试安排次日复习。</p>)}
+        {!flow.reviewUnavailable && review && <div className="learning-practice" aria-busy={busy}><h4>{review.prompt || '等待到期的新问题'}</h4><p className="learning-muted">复习时间：{date(review.due_at)}</p>
+          {review.availability_reason && <p role="status">{review.availability_reason}</p>}
+          {review.revealed_answer ? <p className="learning-muted">本轮已经看过参考表达，之后的回答按有提示练习记录。</p> : review.used_hint && <p className="learning-muted">本轮已经使用提示，之后的回答按有提示练习记录。</p>}
+          <div className="learning-actions"><button type="button" onClick={() => { playback.stop(); setReview(null) }}>返回复习列表</button><button type="button" disabled={busy} onClick={() => { void flow.openReview(review.review_item_id) }}>刷新本项复习</button>
+            <button type="button" disabled={busy || !review.prompt_available} onClick={() => { void perform('review-hint', `/reviews/${encodeURIComponent(review.review_item_id)}/hints`, { expected_revision: review.revision, kind: 'sentence_starter' }, review.session_id) }}>给我一个复习开头并记录提示</button>
+            <button type="button" disabled={busy || !review.prompt_available} onClick={() => { void perform('reveal', `/reviews/${encodeURIComponent(review.review_item_id)}/reveal`, { expected_revision: review.revision }, review.session_id) }}>显示参考表达并记录提示</button>
+            <button type="button" disabled={busy} onClick={() => { void perform('defer-review', `/reviews/${encodeURIComponent(review.review_item_id)}/defer`, { expected_revision: review.revision, days: 1 }, review.session_id) }}>明天再复习</button></div>
+          {reviewHint && <p className="learning-notice" role="status" lang="en">{reviewHint}</p>}
+          {revealedAnswer && <div><p className="learning-muted">保存时的参考表达，新的情境允许其他正确说法。</p><p className="learning-target" lang="en">{revealedAnswer}</p></div>}
+          {selectedReviewResult?.attempt && <div role="status"><p>刚才回答的问题：<span lang="en">{selectedReviewResult.attempt.prompt}</span></p><p lang="en">{selectedReviewResult.attempt.transcript}</p><p>{stateLabel[selectedReviewResult.attempt.evaluation.result]}：{selectedReviewResult.attempt.evaluation.reason}</p>
+            <p>{selectedReviewResult.attempt.evidence_kind === 'shown_answer' ? '本次看过参考表达，按有提示练习记录。' : selectedReviewResult.attempt.evidence_kind === 'hinted' ? '本次使用提示，未计为独立迁移。' : selectedReviewResult.attempt.evidence_kind === 'early_practice' ? '本次在到期前作答，按提前练习记录。' : selectedReviewResult.attempt.evidence_kind === 'source_repeat' ? '本次复述原句或参考表达，未计为独立迁移。' : selectedReviewResult.attempt.evidence_kind === 'repeated_prompt' ? '新问题已用完，本次按重复问题练习记录。' : selectedReviewResult.attempt.schedule_advanced ? '本次到期后独立回答新问题，已保存文字达成证据。' : '本次回答已保存，尚无独立达成的完整证据。'}</p>
+            <p>{selectedReviewResult.attempt.evaluation.status === 'unavailable' ? '评价暂不可用，复习时间和新问题均保留。' : selectedReviewResult.attempt.schedule_advanced ? '复习时间已按本次证据更新。' : '本次未延后复习时间。'}</p><p>下次复习：{date(selectedReviewResult.next_due_at)}</p><AudioButton audio={selectedReviewResult.attempt.audio} id={selectedReviewResult.attempt.attempt_id} label="回放本次复习录音" onPlay={play} /></div>}
+          {review.attempts && review.attempts.some(attempt => attempt.attempt_id !== selectedReviewResult?.attempt.attempt_id) && <section className="learning-attempts" aria-label="已保存的复习回答">{review.attempts.filter(attempt => attempt.attempt_id !== selectedReviewResult?.attempt.attempt_id).map(attempt => <article key={attempt.attempt_id}><h5>{date(attempt.created_at)} 的回答</h5><p lang="en">{attempt.prompt}</p><p lang="en">{attempt.transcript}</p><p>{stateLabel[attempt.evaluation.result]}：{attempt.evaluation.reason}</p><p>{attempt.schedule_advanced ? '到期后独立回答新问题，已有文字达成证据。' : attempt.used_hint ? '本次使用提示，按有提示练习保存。' : '本次按练习记录保存，未增加独立迁移记录。'}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label="回放已保存的复习录音" onPlay={play} /></article>)}</section>}
+          <PracticeInput key={reviewDraftKey} draft={drafts.read(reviewDraftKey)} onDraftChange={changes => drafts.update(reviewDraftKey, changes)} active={active && flow.view === 'review'} disabled={busy || !review.prompt_available} label="我的复习回答" submitLabel="提交复习回答" onSubmit={submission => flow.mutate('review', `/reviews/${encodeURIComponent(review.review_item_id)}/attempts`, submissionBody({ expected_revision: review.revision, text: submission.text }, submission.audio), review.session_id, { draft_key: reviewDraftKey, draft_version: drafts.read(reviewDraftKey).version })} onPlay={play} onStopPlayback={playback.stop} />
         </div>}
       </section>}
       {flow.view === 'progress' && <section className="learning-section"><h3>看得见依据的练习进度</h3><p>练习投入、同题重练和新情境中的使用分别记录。当前没有经过校准的能力总分。</p>
-        {flow.progress ? <><dl className="learning-stat-list"><div><dt>完成的任务</dt><dd>{flow.progress.sessions_completed}</dd></div><div><dt>保存的练习尝试</dt><dd>{flow.progress.attempts_count}</dd></div><div><dt>同题重练</dt><dd>{flow.progress.retries_count}</dd></div><div><dt>完成的复习</dt><dd>{flow.progress.reviews_completed}</dd></div><div><dt>独立迁移的记录</dt><dd>{flow.progress.independent_transfer_count}</dd></div></dl><h4>具体记录</h4>{flow.progress.evidence.length === 0 ? <p>暂时没有可展示的改善证据。继续练习后可以回看对应尝试。</p> : <ul className="learning-history">{flow.progress.evidence.map(item => <li key={item.attempt_id}><div><strong>{item.kind === 'transfer' ? '换情境使用' : item.kind === 'same_task' ? '同题重练' : '练习记录'}</strong><p>{item.description}</p>{item.status !== 'available' && <span>评估尚不完整</span>}</div><button type="button" onClick={() => { void flow.openSession(item.session_id) }}>查看对应尝试</button></li>)}</ul>}</> : <p>进度服务暂不可用，请稍后重新加载。</p>}
+        {flow.progress ? <><dl className="learning-stat-list"><div><dt>完成的任务</dt><dd>{flow.progress.sessions_completed}</dd></div><div><dt>保存的练习尝试</dt><dd>{flow.progress.attempts_count}</dd></div><div><dt>同题重练</dt><dd>{flow.progress.retries_count}</dd></div><div><dt>到期且已评估的回答</dt><dd>{flow.progress.reviews_completed}</dd></div><div><dt>独立迁移的记录</dt><dd>{flow.progress.independent_transfer_count}</dd></div></dl><p className="learning-muted">到期且已评估只说明已有本次文字判断；独立迁移另需未看提示、新问题和达成证据。</p><dl className="learning-stat-list" aria-label="复习记录分类"><div><dt>保存的复习回答</dt><dd>{flow.progress.review_attempts_count ?? 0}</dd></div><div><dt>提前练习</dt><dd>{flow.progress.early_practice_count ?? 0}</dd></div><div><dt>原句或参考表达复述</dt><dd>{flow.progress.source_repeat_count ?? 0}</dd></div><div><dt>有提示复习</dt><dd>{flow.progress.hinted_review_count ?? 0}</dd></div><div><dt>重复问题练习</dt><dd>{flow.progress.repeated_prompt_count ?? 0}</dd></div><div><dt>评估尚不完整的复习</dt><dd>{flow.progress.unassessed_reviews_count ?? 0}</dd></div></dl><h4>具体记录</h4>{flow.progress.evidence.length === 0 ? <p>暂时没有可展示的改善证据。继续练习后可以回看对应尝试。</p> : <ul className="learning-history">{flow.progress.evidence.map(item => <li key={item.attempt_id}><div><strong>{item.kind === 'transfer' ? '换情境使用' : item.kind === 'same_task' ? '同题重练' : '练习记录'}</strong><p>{item.description}</p>{item.status !== 'available' && <span>评估尚不完整</span>}</div><button type="button" onClick={() => { playback.stop(); void (item.review_item_id ? flow.openReview(item.review_item_id) : flow.openSession(item.session_id)) }}>查看对应尝试</button></li>)}</ul>}</> : <p>进度服务暂不可用，请稍后重新加载。</p>}
       </section>}
       {flow.view === 'settings' && <section className="learning-section"><ProfileForm profile={flow.identity.profile} disabled={busy} onSave={flow.saveProfile} />
         <h3>管理学习数据</h3><p>导出内容包括文字学习记录及关联信息。删除后无法通过当前浏览器恢复。</p><div className="learning-actions"><button type="button" disabled={busy} onClick={() => { void exportData() }}>导出学习记录 JSON</button><button type="button" className="learning-danger" onClick={() => setDeleteConfirm(true)}>删除我的学习数据</button></div>

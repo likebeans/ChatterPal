@@ -223,7 +223,8 @@ class TestServiceLayerIntegration:
             self.runtime.audio_bytes, target_text
         )
         assert isinstance(result, AssessmentResult)
-        assert result.overall_score >= 0
+        assert result.overall_score is None
+        assert result.dimensions['overall']['status'] == 'unavailable'
         assert result.recognized_text == target_text
         assert result.target_text == target_text
         assert self.runtime.completion.call_count == 1
@@ -234,7 +235,8 @@ class TestServiceLayerIntegration:
             self.runtime.audio_bytes, target_text
         )
         assert isinstance(result, CorrectionReport)
-        assert result.overall_score >= 0
+        assert result.overall_score is None
+        assert result.dimensions['overall']['status'] == 'unavailable'
         assert result.detailed_feedback
         quick_result = self.correction_service.quick_correction(
             self.runtime.audio_bytes, target_text
@@ -261,7 +263,8 @@ class TestServiceLayerIntegration:
             user_audio, "I want to practice pronunciation"
         )
         assert isinstance(correction_result, CorrectionReport)
-        feedback_text = f"你的发音得分{eval_result.overall_score:.1f}"
+        assert eval_result.overall_score is None
+        feedback_text = '我的发音评分暂不可评估，请给我文本练习建议'
         feedback_response, returned_session = self.chat_service.chat_with_text(
             feedback_text, session_id
         )
@@ -342,7 +345,8 @@ class TestEndToEndWorkflow:
             runtime.audio_bytes, practice_sentence
         )
         assert isinstance(correction_result, CorrectionReport)
-        feedback_text = f"我的发音得分{eval_result.overall_score:.1f}，请给我一些建议"
+        assert eval_result.overall_score is None
+        feedback_text = '我的发音评分暂不可评估，请给我一些练习建议'
         final_response, returned_session = chat_service.chat_with_text(
             feedback_text, session_id
         )

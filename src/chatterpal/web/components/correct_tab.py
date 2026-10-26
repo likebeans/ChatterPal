@@ -23,7 +23,7 @@ class CorrectTab:
 
                 结合语音识别与可用的声学分析，展示服务返回的反馈和练习建议。
                 **评分尚未校准，仅供练习参考，不代表专业发音测评。**
-                部分数值可能为后端估算或默认值；没有问题条目不代表没有发音问题。
+                发音、流畅度和综合评分暂不可评估；没有问题条目不代表没有发音问题。
 
                 1. 输入目标文本（可选）
                 2. 清晰地录制发音
@@ -86,8 +86,8 @@ class CorrectTab:
                     """
                     ### 报告说明
 
-                    报告展示纠错服务返回的识别文本、参考评分、问题条目和练习建议。
-                    当前评分尚未校准，部分数值可能来自后端估算或默认值。
+                    报告展示识别文本、有序词编辑对齐、实测声学摘要和练习建议。
+                    能力评分尚未校准，不提供无测量依据的分数。
                     声学特征与发音错误之间的关联尚未验证，不能替代专业教师的判断。
 
                     未提供问题条目时，只能说明本次报告没有返回相应结果；
@@ -128,10 +128,14 @@ class CorrectTab:
             )
 
             feedback = [
-                "参考评分（未校准，仅供练习参考；可能包含后端估算或默认值）",
-                f"综合评分: {report.overall_score:.1f}/100",
-                report.detailed_feedback or "本次报告未提供详细评分和反馈。",
+                "练习反馈（能力评分未校准）", report.scope,
+                "综合评分: 暂不可评估",
+                report.detailed_feedback or "本次报告未提供详细分析。",
             ]
+            feedback.extend(
+                f"{name}: {item['reason']}（来源：{item['source']}）"
+                for name, item in report.dimensions.items()
+            )
             if report.prosody_issues:
                 feedback.append("\n韵律问题:\n" + self._format_issues(report.prosody_issues))
             else:

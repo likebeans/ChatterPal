@@ -110,7 +110,7 @@ def assess_with_boundary(analyzer, audio_data, acoustics):
         assert result["analysis_success"] is True
         if isinstance(analyzer, prosody.ProsodyAnalyzer):
             assert result["prosody_features"].syllable_count == (
-                1 if acoustics.failure else 4
+                None if acoustics.failure else 4
             )
     assert acoustics.paths
 

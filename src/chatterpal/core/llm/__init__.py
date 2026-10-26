@@ -1,11 +1,24 @@
-# -*- coding: utf-8 -*-
-"""
-大语言模型(LLM)模块
-提供统一的大语言模型接口，支持多种LLM提供商
-"""
+"""LLM interfaces and providers without eager SDK imports."""
 
-from .base import LLMBase, LLMError
-from .alibaba import AlibabaDashScopeLLM
-from .openai import OpenAILLM
+from importlib import import_module
 
-__all__ = ["LLMBase", "LLMError", "AlibabaDashScopeLLM", "OpenAILLM"]
+_EXPORTS = {
+    "LLMBase": ".base",
+    "LLMError": ".base",
+    "AlibabaDashScopeLLM": ".alibaba",
+    "OpenAILLM": ".openai",
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))

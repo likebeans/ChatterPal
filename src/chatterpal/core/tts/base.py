@@ -5,10 +5,13 @@ TTS基类定义
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List, Callable
-from dataclasses import dataclass
+from typing import Optional, Dict, Any, List, Callable, Mapping, Union
+from dataclasses import dataclass, asdict
 from enum import Enum
+from copy import deepcopy
 import base64
+import io
+import wave
 import glob
 import hashlib
 import json
@@ -20,13 +23,17 @@ import time
 import threading
 
 from ...utils.encoding_fix import safe_str
+from .options import SynthesisOptions, freeze_parameters
 
 logger = logging.getLogger(__name__)
 
 
 class TTSError(Exception):
-    """语音合成错误基类"""
-    pass
+    """语音合成错误基类，保留可选的安全诊断元数据。"""
+
+    def __init__(self, *args, metadata: Optional[Dict[str, Any]] = None):
+        super().__init__(*args)
+        self.metadata = deepcopy(metadata or {})
 
 
 class TTSCacheError(TTSError):
@@ -60,15 +67,126 @@ class TTSResult:
     metadata: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class AudioOutputInfo:
+    """Container metadata suitable for filenames and HTTP responses."""
+
+    format: str = "unknown"
+    extension: str = ".bin"
+    media_type: str = "application/octet-stream"
+    sample_rate: int = 0
+    channels: int = 0
+    duration: float = 0.0
+
+
+def get_audio_output_info(
+    audio_data: bytes, *, format: Optional[str] = None, sample_rate: int = 0
+) -> AudioOutputInfo:
+    """Inspect encoded bytes; only explicit PCM may rely on a format hint."""
+    detected = "unknown"
+    extension, media_type = ".bin", "application/octet-stream"
+    rate, channels, duration = 0, 0, 0.0
+    if audio_data[:4] in (b"RIFF", b"RF64") and audio_data[8:12] == b"WAVE":
+        detected, extension, media_type = "wav", ".wav", "audio/wav"
+        try:
+            with wave.open(io.BytesIO(audio_data), "rb") as source:
+                rate, channels = source.getframerate(), source.getnchannels()
+                duration = source.getnframes() / rate
+        except (EOFError, OSError, ValueError, wave.Error):
+            pass
+    elif audio_data.startswith(b"fLaC"):
+        detected, extension, media_type = "flac", ".flac", "audio/flac"
+    elif audio_data.startswith(b"OggS"):
+        detected = "opus" if b"OpusHead" in audio_data[:128] else "ogg"
+        extension, media_type = f".{detected}", "audio/ogg"
+    elif len(audio_data) >= 12 and audio_data[4:8] == b"ftyp":
+        detected, extension, media_type = "m4a", ".m4a", "audio/mp4"
+    else:
+        offset = 0
+        if len(audio_data) >= 10 and audio_data.startswith(b"ID3"):
+            detected, extension, media_type = "mp3", ".mp3", "audio/mpeg"
+            if all(byte < 128 for byte in audio_data[6:10]):
+                offset = 10 + sum(
+                    byte << shift
+                    for byte, shift in zip(audio_data[6:10], (21, 14, 7, 0))
+                )
+        header = audio_data[offset : offset + 4]
+        if len(header) == 4:
+            version, layer = (header[1] >> 3) & 3, (header[1] >> 1) & 3
+            rate_index, bitrate_index = (header[2] >> 2) & 3, header[2] >> 4
+            if (
+                header[0] == 0xFF
+                and header[1] & 0xE0 == 0xE0
+                and version != 1
+                and layer != 0
+                and rate_index != 3
+                and 0 < bitrate_index < 15
+            ):
+                detected, extension, media_type = "mp3", ".mp3", "audio/mpeg"
+                rate = (44100, 48000, 32000)[rate_index] // {3: 1, 2: 2, 0: 4}[version]
+                channels = 1 if header[3] >> 6 == 3 else 2
+
+    if detected != "unknown":
+        if not rate or not duration:
+            try:
+                import soundfile as sf
+
+                info = sf.info(io.BytesIO(audio_data))
+                rate, channels, duration = info.samplerate, info.channels, info.duration
+            except (ImportError, OSError, RuntimeError, ValueError):
+                pass
+        return AudioOutputInfo(
+            detected, extension, media_type, rate, channels, duration
+        )
+
+    if (
+        format == "pcm"
+        and type(sample_rate) is int
+        and sample_rate > 0
+        and audio_data
+        and len(audio_data) % 2 == 0
+    ):
+        return AudioOutputInfo(
+            "pcm",
+            ".pcm",
+            "application/octet-stream",
+            sample_rate,
+            1,
+            len(audio_data) / (2 * sample_rate),
+        )
+    return AudioOutputInfo()
+
+
+def prepare_audio_output(
+    audio_data: bytes, *, format: Optional[str] = None, sample_rate: int = 0
+) -> tuple[bytes, AudioOutputInfo]:
+    """Wrap explicitly described PCM16LE mono in WAV; preserve encoded data."""
+    info = get_audio_output_info(audio_data, format=format, sample_rate=sample_rate)
+    if info.format != "pcm":
+        return audio_data, info
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(info.sample_rate)
+        output.writeframes(audio_data)
+    encoded = buffer.getvalue()
+    return encoded, get_audio_output_info(encoded)
+
+
 @dataclass
 class CacheEntry:
     """缓存条目"""
+
     key: str
     audio_data: bytes
     metadata: Dict[str, Any]
     created_at: float
     access_count: int
     last_accessed: float
+    format: str = "wav"
+    sample_rate: int = 16000
+    duration: float = 0.0
 
 
 class TTSBase(ABC):
@@ -86,24 +204,24 @@ class TTSBase(ABC):
         """
         self.config = config or {}
         self.logger = logging.getLogger(self.__class__.__name__)
-        
+
         # 缓存配置
         self.enable_cache = self.config.get("enable_cache", True)
         self.cache_size_limit = self.config.get("cache_size_limit", 100)  # 最大缓存条目数
         self.cache_ttl = self.config.get("cache_ttl", 3600)  # 缓存生存时间（秒）
         self.cache_dir = self.config.get("cache_dir", None)  # 持久化缓存目录
-        
+
         # 播放控制配置
         self.auto_play = self.config.get("auto_play", False)
         self.playback_volume = self.config.get("playback_volume", 1.0)
-        
+
         # 内部状态
         self._cache = {}  # 内存缓存
         self._cache_lock = threading.Lock()
         self._playback_state = PlaybackState.STOPPED
         self._current_audio = None
         self._playback_callbacks = []
-        
+
         # 初始化可选的磁盘缓存；失败时保留内存缓存。
         if self.enable_cache and self.cache_dir:
             self._init_cache_dir()
@@ -196,6 +314,62 @@ class TTSBase(ABC):
 
         return cleaned_text
 
+    def resolve_synthesis_options(self, **kwargs) -> SynthesisOptions:
+        """Snapshot defaults as well as overrides before looking up cached audio."""
+        supplied = kwargs.get("options")
+        if supplied is not None:
+            if not isinstance(supplied, SynthesisOptions):
+                raise TTSError("options必须是SynthesisOptions")
+            return supplied
+        parameters = {
+            "model": self.config.get("model", ""),
+            "voice": self.config.get("voice", ""),
+            "rate": self.config.get("rate", self.config.get("speech_rate", 1.0)),
+            "volume": self.config.get("volume", 50),
+            "pitch": self.config.get("pitch", self.config.get("pitch_rate", 1.0)),
+            "format": self.config.get("format", self.config.get("audio_format", "wav")),
+            "sample_rate": self.config.get("sample_rate", 16000),
+        }
+        parameters.update(
+            {key: value for key, value in kwargs.items() if value is not None}
+        )
+        extra = {
+            key: value
+            for key, value in parameters.items()
+            if key
+            not in {
+                "model",
+                "voice",
+                "rate",
+                "volume",
+                "pitch",
+                "format",
+                "sample_rate",
+            }
+        }
+        return SynthesisOptions(
+            provider=f"{type(self).__module__}.{type(self).__qualname__}",
+            **{
+                key: parameters[key]
+                for key in (
+                    "model",
+                    "voice",
+                    "rate",
+                    "volume",
+                    "pitch",
+                    "format",
+                    "sample_rate",
+                )
+            },
+            extra=freeze_parameters(extra),
+        )
+
+    def _synthesis_kwargs(
+        self, options: SynthesisOptions, kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Legacy subclasses keep receiving their existing keyword arguments."""
+        return kwargs.copy()
+
     def synthesize_with_error_handling(
         self, 
         text: str, 
@@ -217,67 +391,89 @@ class TTSBase(ABC):
             SpeechSynthesisError: 语音合成错误
         """
         from ..errors import error_handler, SpeechSynthesisError
-        
+
         # 验证输入文本
         if not self.validate_text(text):
             raise error_handler.create_error("TTS_SERVICE_ERROR", 
                                            message="输入文本无效",
                                            text_length=len(text) if text else 0)
-        
+
         # 清理文本
         cleaned_text = self.clean_text_for_tts(text)
         if not cleaned_text:
-            raise error_handler.create_error("TTS_SERVICE_ERROR", 
-                                           message="清理后的文本为空",
-                                           original_text=text)
-        
-        # 检查缓存
+            raise error_handler.create_error(
+                "TTS_SERVICE_ERROR", message="清理后的文本为空", original_text=text
+            )
+
+        # Freeze provider defaults before looking up or synthesizing this request.
+        try:
+            kwargs = deepcopy(kwargs)
+            options = self.resolve_synthesis_options(**kwargs)
+            synthesis_kwargs = self._synthesis_kwargs(options, kwargs)
+        except Exception as e:
+            raise error_handler.create_error(
+                "TTS_SERVICE_ERROR", error_message=safe_str(e)
+            ) from e
+
+        # Cache and retries use exactly the same resolved request options.
         if self.enable_cache:
-            cached_result = self._get_from_cache(cleaned_text, kwargs)
+            cached_result = self._get_from_cache(cleaned_text, options)
             if cached_result:
                 self.logger.info(f"TTS缓存命中: {cleaned_text[:50]}...")
                 self._auto_play_result(cached_result)
                 return cached_result
-        
+
         # 执行合成（带重试）
         last_error = None
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
-                
+
                 # 调用实际的合成方法
-                audio_data = self.synthesize(cleaned_text, **kwargs)
-                
+                audio_data = self.synthesize(cleaned_text, **synthesis_kwargs)
+
                 synthesis_time = time.time() - start_time
-                
+
                 # 检查合成时间
                 max_synthesis_time = self.config.get("max_synthesis_time", 30.0)
                 if synthesis_time > max_synthesis_time:
                     raise error_handler.create_error("TTS_TIMEOUT", 
                                                    synthesis_time=synthesis_time,
                                                    max_time=max_synthesis_time)
-                
+
                 # 验证音频数据
                 if not audio_data or len(audio_data) == 0:
-                    raise error_handler.create_error("TTS_SERVICE_ERROR", 
-                                                   message="合成的音频数据为空")
-                
-                # 创建结果对象
+                    raise error_handler.create_error(
+                        "TTS_SERVICE_ERROR", message="合成的音频数据为空"
+                    )
+
+                # Encoded container metadata wins over configured defaults.
+                output_info = get_audio_output_info(
+                    audio_data, format=options.format, sample_rate=options.sample_rate
+                )
                 result = TTSResult(
                     text=cleaned_text,
                     audio_data=audio_data,
-                    duration=self._estimate_audio_duration(audio_data),
-                    format=self.config.get("audio_format", "wav"),
-                    sample_rate=self.config.get("sample_rate", 16000),
+                    duration=(
+                        output_info.duration
+                        if output_info.format != "unknown"
+                        else self._estimate_audio_duration(audio_data)
+                    ),
+                    format=(
+                        output_info.format
+                        if output_info.format != "unknown"
+                        else options.format
+                    ),
+                    sample_rate=output_info.sample_rate or options.sample_rate,
                     cached=False,
                     synthesis_time=synthesis_time,
                     metadata={
                         "attempt": attempt + 1,
                         "original_text": text,
-                        "text_length": len(cleaned_text)
-                    }
+                        "text_length": len(cleaned_text),
+                    },
                 )
-                
+
             except SpeechSynthesisError:
                 # 重新抛出已知错误
                 raise
@@ -286,7 +482,7 @@ class TTSBase(ABC):
                                                       attempt=attempt + 1,
                                                       error_message=safe_str(e),
                                                       text_length=len(cleaned_text))
-                
+
                 if attempt < max_retries - 1:
                     self.logger.warning(f"TTS合成失败，重试 {attempt + 1}/{max_retries}: {e}")
                     time.sleep(0.5 * (attempt + 1))  # 递增延迟
@@ -302,7 +498,7 @@ class TTSBase(ABC):
             # 合成已成功；缓存和播放失败都不能触发重新合成。
             if self.enable_cache:
                 try:
-                    self._save_to_cache(cleaned_text, result, kwargs)
+                    self._save_to_cache(cleaned_text, result, options)
                 except Exception as e:
                     self.logger.warning(f"缓存保存失败: {e}")
             if attempt > 0:
@@ -328,7 +524,9 @@ class TTSBase(ABC):
             self.logger.warning(f"自动播放失败，保留已合成的音频: {e}")
         self._playback_state = PlaybackState.ERROR
 
-    def _get_from_cache(self, text: str, kwargs: Dict[str, Any]) -> Optional[TTSResult]:
+    def _get_from_cache(
+        self, text: str, kwargs: Union[Mapping[str, Any], SynthesisOptions]
+    ) -> Optional[TTSResult]:
         """从内存或磁盘获取结果，损坏或过期的缓存视为未命中。"""
         if not self.enable_cache or self.cache_size_limit <= 0:
             return None
@@ -357,18 +555,23 @@ class TTSBase(ABC):
                 return TTSResult(
                     text=text,
                     audio_data=entry.audio_data,
-                    duration=self._estimate_audio_duration(entry.audio_data),
-                    format=self.config.get("audio_format", "wav"),
-                    sample_rate=self.config.get("sample_rate", 16000),
+                    duration=entry.duration,
+                    format=entry.format,
+                    sample_rate=entry.sample_rate,
                     cached=True,
                     synthesis_time=0.0,
-                    metadata=entry.metadata.copy()
+                    metadata=deepcopy(entry.metadata),
                 )
         except Exception as e:
             self.logger.warning(f"缓存读取失败: {e}")
             return None
 
-    def _save_to_cache(self, text: str, result: TTSResult, kwargs: Dict[str, Any]) -> None:
+    def _save_to_cache(
+        self,
+        text: str,
+        result: TTSResult,
+        kwargs: Union[Mapping[str, Any], SynthesisOptions],
+    ) -> None:
         """保存结果到内存和可选的磁盘缓存。"""
         if not self.enable_cache or self.cache_size_limit <= 0:
             return
@@ -381,21 +584,35 @@ class TTSBase(ABC):
                 entry = CacheEntry(
                     key=cache_key,
                     audio_data=result.audio_data,
-                    metadata=result.metadata.copy(),
+                    metadata=deepcopy(result.metadata),
                     created_at=now,
                     access_count=1,
-                    last_accessed=now
+                    last_accessed=now,
+                    format=result.format,
+                    sample_rate=result.sample_rate,
+                    duration=result.duration,
                 )
                 self._cache[cache_key] = entry
                 self._save_to_disk_cache(entry)
         except Exception as e:
             self.logger.warning(f"缓存保存失败: {e}")
 
-    def _generate_cache_key(self, text: str, kwargs: Dict[str, Any]) -> str:
-        """生成缓存键"""
-        # 创建包含文本和参数的字符串
-        key_data = f"{text}|{sorted(kwargs.items())}"
-        return hashlib.md5(key_data.encode()).hexdigest()
+    def _generate_cache_key(
+        self, text: str, kwargs: Union[Mapping[str, Any], SynthesisOptions]
+    ) -> str:
+        """Hash effective options, including implementation and provider identity."""
+        options = (
+            kwargs
+            if isinstance(kwargs, SynthesisOptions)
+            else self.resolve_synthesis_options(**kwargs)
+        )
+        identity = (
+            "tts-options-v2",
+            f"{type(self).__module__}.{type(self).__qualname__}",
+            text,
+            freeze_parameters(asdict(options)),
+        )
+        return hashlib.md5(repr(identity).encode("utf-8")).hexdigest()
 
     def _evict_cache_entries(self, incoming_key: Optional[str] = None) -> None:
         """为新条目腾出空间，同时清理内存和磁盘中的过期或冷门记录。"""
@@ -434,7 +651,7 @@ class TTSBase(ABC):
             # 简单估算：假设是16位PCM，16kHz采样率
             sample_rate = self.config.get("sample_rate", 16000)
             bytes_per_sample = 2  # 16位 = 2字节
-            
+
             # 尝试从WAV头部获取信息
             if len(audio_data) > 44 and audio_data[:4] == b'RIFF':
                 # WAV文件格式
@@ -445,7 +662,7 @@ class TTSBase(ABC):
                     # 读取位深度（字节34-35）
                     bits_per_sample = struct.unpack('<H', audio_data[34:36])[0]
                     bytes_per_sample = bits_per_sample // 8
-                    
+
                     # 音频数据从字节44开始
                     audio_data_size = len(audio_data) - 44
                 except:
@@ -453,10 +670,10 @@ class TTSBase(ABC):
                     audio_data_size = len(audio_data)
             else:
                 audio_data_size = len(audio_data)
-            
+
             duration = audio_data_size / (sample_rate * bytes_per_sample)
             return max(0.0, duration)
-            
+
         except Exception as e:
             self.logger.warning(f"音频时长估算失败: {e}")
             return 0.0
@@ -472,21 +689,21 @@ class TTSBase(ABC):
             是否播放成功
         """
         from ..errors import error_handler, AudioOutputError
-        
+
         try:
             if not audio_data:
                 raise error_handler.create_error("AUDIO_PLAYBACK_ERROR", 
                                                 message="音频数据为空")
-            
+
             # 尝试播放音频
             success = self._play_audio_internal(audio_data)
-            
+
             if not success:
                 raise error_handler.create_error("AUDIO_PLAYBACK_ERROR",
                                                 message="音频播放失败")
-            
+
             return True
-            
+
         except AudioOutputError:
             raise
         except Exception as e:
@@ -510,12 +727,15 @@ class TTSBase(ABC):
             import tempfile
             import os
             import subprocess
-            
+
             # 创建临时文件
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+            output_info = get_audio_output_info(audio_data)
+            with tempfile.NamedTemporaryFile(
+                suffix=output_info.extension, delete=False
+            ) as temp_file:
                 temp_file.write(audio_data)
                 temp_path = temp_file.name
-            
+
             try:
                 # 尝试播放（Windows）
                 if os.name == 'nt':
@@ -533,7 +753,7 @@ class TTSBase(ABC):
                     os.unlink(temp_path)
                 except:
                     pass
-                    
+
         except Exception as e:
             self.logger.warning(f"音频播放失败: {e}")
             return False
@@ -647,7 +867,7 @@ class TTSBase(ABC):
 
         try:
             # 尝试使用librosa分析音频
-            import librosa
+            import librosa  # noqa: F401 - preserve the optional analyzer check
             import io
             import soundfile as sf
 
@@ -694,6 +914,12 @@ class TTSBase(ABC):
                 or data.get("key") != cache_key
                 or not isinstance(data.get("metadata"), dict)
                 or not isinstance(data.get("audio_data"), str)
+                or not isinstance(data.get("format"), str)
+                or type(data.get("sample_rate")) is not int
+                or data["sample_rate"] < 0
+                or type(data.get("duration")) not in (int, float)
+                or not math.isfinite(data["duration"])
+                or data["duration"] < 0
                 or type(data.get("access_count")) is not int
                 or data["access_count"] < 1
                 or any(
@@ -704,9 +930,8 @@ class TTSBase(ABC):
             ):
                 raise ValueError("缓存数据格式无效")
             audio_data = base64.b64decode(data["audio_data"], validate=True)
-            if (
-                not audio_data
-                or hashlib.sha256(audio_data).hexdigest() != data.get("sha256")
+            if not audio_data or hashlib.sha256(audio_data).hexdigest() != data.get(
+                "sha256"
             ):
                 raise ValueError("缓存音频数据无效")
             return CacheEntry(
@@ -715,7 +940,10 @@ class TTSBase(ABC):
                 metadata=data["metadata"],
                 created_at=data["created_at"],
                 access_count=data["access_count"],
-                last_accessed=data["last_accessed"]
+                last_accessed=data["last_accessed"],
+                format=data["format"],
+                sample_rate=data["sample_rate"],
+                duration=data["duration"],
             )
         except FileNotFoundError:
             return None
@@ -747,12 +975,15 @@ class TTSBase(ABC):
                     "audio_data": base64.b64encode(entry.audio_data).decode("ascii"),
                     "sha256": hashlib.sha256(entry.audio_data).hexdigest(),
                     "metadata": entry.metadata,
+                    "format": entry.format,
+                    "sample_rate": entry.sample_rate,
+                    "duration": entry.duration,
                     "created_at": entry.created_at,
                     "access_count": entry.access_count,
-                    "last_accessed": entry.last_accessed
+                    "last_accessed": entry.last_accessed,
                 },
                 ensure_ascii=False,
-                allow_nan=False
+                allow_nan=False,
             )
             cache_file = os.path.join(self.cache_dir, f"{entry.key}.cache")
             with tempfile.NamedTemporaryFile(
@@ -796,7 +1027,7 @@ class TTSBase(ABC):
         with self._cache_lock:
             total_size = sum(len(entry.audio_data) for entry in self._cache.values())
             total_access = sum(entry.access_count for entry in self._cache.values())
-            
+
             return {
                 "entries": len(self._cache),
                 "total_size_bytes": total_size,
@@ -854,28 +1085,28 @@ class TTSBase(ABC):
         try:
             import pygame
             import io
-            
+
             # 初始化pygame mixer
             pygame.mixer.init()
-            
+
             # 加载音频数据
             audio_io = io.BytesIO(audio_data)
             sound = pygame.mixer.Sound(audio_io)
-            
+
             # 设置音量
             volume = kwargs.get("volume", self.playback_volume)
             sound.set_volume(volume)
-            
+
             # 播放音频
             self._playback_state = PlaybackState.PLAYING
             self._current_audio = sound
             sound.play()
-            
+
             # 通知回调
             self._notify_playback_callbacks("started")
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"pygame播放失败: {e}")
             raise ImportError("pygame播放失败")
@@ -894,30 +1125,33 @@ class TTSBase(ABC):
         try:
             import playsound
             import tempfile
-            
+
             # 保存到临时文件
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            output_info = get_audio_output_info(audio_data)
+            with tempfile.NamedTemporaryFile(
+                suffix=output_info.extension, delete=False
+            ) as temp_file:
                 temp_file.write(audio_data)
                 temp_path = temp_file.name
-            
+
             try:
                 self._playback_state = PlaybackState.PLAYING
                 self._notify_playback_callbacks("started")
-                
+
                 # 播放音频
                 playsound.playsound(temp_path)
-                
+
                 self._playback_state = PlaybackState.STOPPED
                 self._notify_playback_callbacks("finished")
-                
+
                 return True
-                
+
             finally:
                 try:
                     os.unlink(temp_path)
                 except:
                     pass
-                    
+
         except Exception as e:
             self.logger.error(f"playsound播放失败: {e}")
             raise ImportError("playsound播放失败")
@@ -937,16 +1171,19 @@ class TTSBase(ABC):
             import tempfile
             import subprocess
             import platform
-            
+
             # 保存到临时文件
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
+            output_info = get_audio_output_info(audio_data)
+            with tempfile.NamedTemporaryFile(
+                suffix=output_info.extension, delete=False
+            ) as temp_file:
                 temp_file.write(audio_data)
                 temp_path = temp_file.name
-            
+
             try:
                 self._playback_state = PlaybackState.PLAYING
                 self._notify_playback_callbacks("started")
-                
+
                 # 根据操作系统选择播放命令
                 system = platform.system().lower()
                 if system == "windows":
@@ -957,18 +1194,18 @@ class TTSBase(ABC):
                     subprocess.run(["aplay", temp_path], check=True)
                 else:
                     raise Exception(f"不支持的操作系统: {system}")
-                
+
                 self._playback_state = PlaybackState.STOPPED
                 self._notify_playback_callbacks("finished")
-                
+
                 return True
-                
+
             finally:
                 try:
                     os.unlink(temp_path)
                 except:
                     pass
-                    
+
         except Exception as e:
             self.logger.error(f"系统命令播放失败: {e}")
             raise Exception("系统命令播放失败")
@@ -983,13 +1220,13 @@ class TTSBase(ABC):
         try:
             if self._current_audio and hasattr(self._current_audio, "stop"):
                 self._current_audio.stop()
-            
+
             self._playback_state = PlaybackState.STOPPED
             self._current_audio = None
             self._notify_playback_callbacks("stopped")
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"停止播放失败: {e}")
             return False
@@ -1007,9 +1244,9 @@ class TTSBase(ABC):
                 self._playback_state = PlaybackState.PAUSED
                 self._notify_playback_callbacks("paused")
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             self.logger.error(f"暂停播放失败: {e}")
             return False
@@ -1027,9 +1264,9 @@ class TTSBase(ABC):
                 self._playback_state = PlaybackState.PLAYING
                 self._notify_playback_callbacks("resumed")
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             self.logger.error(f"恢复播放失败: {e}")
             return False
@@ -1083,7 +1320,7 @@ class TTSBase(ABC):
             volume: 音量 (0.0-1.0)
         """
         self.playback_volume = max(0.0, min(1.0, volume))
-        
+
         # 如果当前有音频在播放，更新音量
         if self._current_audio and hasattr(self._current_audio, "set_volume"):
             self._current_audio.set_volume(self.playback_volume)

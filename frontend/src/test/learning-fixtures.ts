@@ -33,6 +33,7 @@ export function mockLearningApi(): LearningApi {
     history: vi.fn(async () => ({ items: [], next_cursor: null })),
     session: vi.fn(async (id: string) => learningSession(id)),
     reviews: vi.fn(async () => []),
+    review: vi.fn(async () => { throw new Error('No review lookup configured') }),
     progress: vi.fn(async () => ({ sessions_completed: 0, attempts_count: 0, retries_count: 0, reviews_completed: 0, independent_transfer_count: 0, evidence: [] })),
     profile: vi.fn(async profile => profile),
     mutate: vi.fn(async () => operation(learningSession())),
