@@ -15,7 +15,6 @@ jobs:
     env:
       GRADIO_ANALYTICS_ENABLED: "False"
       HF_HUB_DISABLE_TELEMETRY: "1"
-      CHATTERPAL_TEST_WHEELHOUSE: ${{ runner.temp }}/packaged-cli-wheelhouse
     steps:
       - uses: actions/checkout@v4
       - name: Install audio build dependencies
@@ -28,6 +27,8 @@ jobs:
         run: uv sync --frozen --python 3.12
       - name: Prepare wheels for offline packaged CLI tests
         run: |
+          export CHATTERPAL_TEST_WHEELHOUSE="$RUNNER_TEMP/packaged-cli-wheelhouse"
+          printf 'CHATTERPAL_TEST_WHEELHOUSE=%s\n' "$CHATTERPAL_TEST_WHEELHOUSE" >> "$GITHUB_ENV"
           uv export --frozen --no-dev --no-emit-project --quiet --output-file "$RUNNER_TEMP/packaged-cli-requirements.txt"
           uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" --requirement "$RUNNER_TEMP/packaged-cli-requirements.txt"
           uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" hatchling
