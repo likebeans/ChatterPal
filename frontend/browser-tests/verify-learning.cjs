@@ -67,7 +67,9 @@ const output = process.env.BROWSER_OUTPUT_DIR || '/tmp/chatterpal-int2-contract-
     await assertReleased(page);
     await page.getByRole('button', { name: '返回本次练习' }).click();
     await page.getByRole('button', { name: '试听本次录音', exact: true }).waitFor();
-    await page.getByRole('button', { name: '保存这次重练', exact: true }).click();
+    await page.getByRole('button', { name: '识别并核对录音', exact: true }).click();
+    await page.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor();
+    await page.getByRole('button', { name: '确认文字并提交', exact: true }).click();
     await page.getByText('第 4 次练习', { exact: true }).waitFor();
     const captureIndex = await page.evaluate(() => window.__probe.captureBatches.length);
     await page.getByRole('button', { name: '开始录音', exact: true }).click();

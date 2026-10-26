@@ -22,6 +22,13 @@ from .ports import LearningProvider
 from .runtime import LearningRuntime
 from .sessions import SessionConflict, TaskSession
 from .storage import LearningStore, StoreError
+from .transcription import (
+    attempt_context,
+    confirmed_submission,
+    consume_spec,
+    turn_context,
+    validate_attempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +125,9 @@ class LearningService:
             "data": snapshot,
         }
 
-    def _submit(self, owner, body, action, record, work, *, payload=None):
+    def _submit(
+        self, owner, body, action, record, work, *, payload=None, transcription=None
+    ):
         return self.runtime.submit(
             owner,
             body.request_id,
@@ -132,12 +141,13 @@ class LearningService:
                 if isinstance(body, AttemptRequest)
                 else body.expected_revision
             ),
+            transcription_consume=transcription,
         )
 
     @staticmethod
     def _audio_payload(body, audio):
         return {
-            **body.model_dump(mode="json"),
+            **body.submission_payload(),
             "audio_sha256": (
                 hashlib.sha256(audio).hexdigest() if audio is not None else None
             ),
@@ -232,6 +242,7 @@ class LearningService:
     def turn(self, owner, session_id, body: TurnRequest, audio: bytes | None = None):
         record = self._session_record(owner, session_id)
         payload = self._audio_payload(body, audio)
+        context = turn_context(session_id, body)
 
         def work(claim):
             domain = self._domain(record)
@@ -239,13 +250,22 @@ class LearningService:
                 raise StoreError(
                     "session_completed", "这次对话已结束，请从原句进入重练。", 409
                 )
-            text = self._transcript(body.text, audio)
+            provenance = confirmed_submission(
+                self.repository, owner, body, context, self.clock()
+            )
+            text = (
+                body.confirmed_text
+                if provenance
+                else self._transcript(body.text, audio)
+            )
             reply = parse_coach_response(
                 domain, text, self.provider.reply(build_coach_messages(domain, text))
             )
             user_id, coach_id = str(uuid.uuid4()), str(uuid.uuid4())
             coach_audio, assets = self._audio(owner, reply.reply, key="coach")
-            if audio is not None:
+            if provenance:
+                user_audio = {"audio_key": "transcription"}
+            elif audio is not None:
                 user_audio = {"audio_key": "user"}
                 assets.append(
                     {
@@ -262,8 +282,10 @@ class LearningService:
                 assistant_turn_id=coach_id,
                 text=text,
                 reply=reply.reply,
-                input_source="audio" if audio is not None else "text",
-                audio_status="available" if audio is not None else "unavailable",
+                input_source="audio" if audio is not None or provenance else "text",
+                audio_status=(
+                    "available" if audio is not None or provenance else "unavailable"
+                ),
                 now=self.clock(),
             )
             snapshot = self._updated(record, updated_domain)
@@ -274,6 +296,7 @@ class LearningService:
                         "role": "user",
                         "text": text,
                         "audio": user_audio,
+                        **(provenance or {}),
                     },
                     {
                         "turn_id": coach_id,
@@ -299,7 +322,15 @@ class LearningService:
                 "audio": assets,
             }
 
-        return self._submit(owner, body, "turn", record, work, payload=payload)
+        return self._submit(
+            owner,
+            body,
+            "turn",
+            record,
+            work,
+            payload=payload,
+            transcription=consume_spec(body, context),
+        )
 
     def hint(self, owner, session_id, body: HintRequest):
         record = self._session_record(owner, session_id)
@@ -353,6 +384,16 @@ class LearningService:
                 parent_attempt_id=None,
                 mode="free_response",
                 transcript=turn["text"],
+                **{
+                    key: turn[key]
+                    for key in (
+                        "machine_transcript",
+                        "confirmed_text",
+                        "transcription_id",
+                        "confirmed_at",
+                    )
+                    if key in turn
+                },
                 feedback=feedback,
                 evaluation=Evaluation(
                     status="partial",
@@ -427,56 +468,15 @@ class LearningService:
         def work(claim):
             snapshot = self._updated(record)
             domain = self._domain(record)
-            turn = next(
-                (
-                    turn
-                    for turn in snapshot["turns"]
-                    if turn["turn_id"] == body.source_turn_id and turn["role"] == "user"
-                ),
-                None,
+            validate_attempt(record, body)
+            provenance = confirmed_submission(
+                self.repository, owner, body, attempt_context(body), self.clock()
             )
-            if turn is None:
-                raise StoreError("turn_not_found", "找不到这次重练关联的原句。", 404)
-            focus = None
-            if body.focus_id is not None:
-                focus = next(
-                    (
-                        item
-                        for item in (snapshot.get("feedback") or {}).get("focuses", [])
-                        if item["focus_id"] == body.focus_id
-                        and item["source_turn_id"] == body.source_turn_id
-                    ),
-                    None,
-                )
-                if focus is None:
-                    raise StoreError("focus_not_found", "这项反馈不属于当前原句。", 404)
-            parent = None
-            if body.parent_attempt_id is not None:
-                parent = next(
-                    (
-                        item
-                        for item in snapshot["attempts"]
-                        if item["attempt_id"] == body.parent_attempt_id
-                        and item["source_turn_id"] == body.source_turn_id
-                        and item["focus_id"] == body.focus_id
-                        and item["mode"] == body.mode
-                    ),
-                    None,
-                )
-                if parent is None:
-                    raise StoreError(
-                        "attempt_not_found", "前次尝试不属于当前练习方式或原句。", 404
-                    )
-            allowed_targets = {turn["text"]}
-            if focus:
-                allowed_targets.update((focus["original"], focus["suggested"]))
-            if body.mode == "read_aloud" and body.target_text not in allowed_targets:
-                raise StoreError(
-                    "target_required", "跟读需要使用当前原句或反馈中的目标表达。", 422
-                )
-            if body.mode == "free_response" and body.target_text is not None:
-                raise StoreError("unexpected_target", "自由表达不需要参考句。", 422)
-            text = self._transcript(body.text, audio)
+            text = (
+                body.confirmed_text
+                if provenance
+                else self._transcript(body.text, audio)
+            )
             evaluation = evaluate_attempt(
                 self.provider,
                 domain,
@@ -486,7 +486,9 @@ class LearningService:
                 body.source_turn_id,
             )
             assets = []
-            if audio is not None:
+            if provenance:
+                attempt_audio = {"audio_key": "transcription"}
+            elif audio is not None:
                 attempt_audio = {"audio_key": "attempt"}
                 assets.append(
                     {
@@ -505,6 +507,7 @@ class LearningService:
                 "parent_attempt_id": body.parent_attempt_id,
                 "mode": body.mode,
                 "transcript": text,
+                **(provenance or {}),
                 "feedback": snapshot.get("feedback"),
                 "evaluation": _dump(evaluation),
                 "audio": attempt_audio,
@@ -536,6 +539,7 @@ class LearningService:
             record,
             work,
             payload=self._audio_payload(body, audio),
+            transcription=consume_spec(body, attempt_context(body)),
         )
 
     def get_attempt(self, owner, attempt_id):

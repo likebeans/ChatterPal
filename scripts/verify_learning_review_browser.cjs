@@ -227,7 +227,12 @@ async function stop(child) {
     await delay(800);
     await page.getByRole('button', { name: '停止录音', exact: true }).click();
     await page.getByRole('button', { name: '试听本次录音', exact: true }).waitFor();
-    const audioAnswer = await submit(page.getByRole('button', { name: '提交复习回答', exact: true }), '/attempts');
+    const recognition = await submit(page.getByRole('button', { name: '识别并核对录音', exact: true }), '/transcriptions');
+    assert.equal(recognition.result_type, 'transcription');
+    await page.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor();
+    const audioAnswer = await submit(page.getByRole('button', { name: '确认文字并提交', exact: true }), '/attempts');
+    assert.equal(audioAnswer.result.attempt.machine_transcript, recognition.result.machine_transcript);
+    assert.equal(audioAnswer.result.attempt.transcription_id, recognition.result.transcription_id);
     assert.equal(audioAnswer.result.attempt.used_hint, true);
     assert.equal(audioAnswer.result.attempt.schedule_advanced, false);
     assert.equal(audioAnswer.result.attempt.evidence_kind, 'shown_answer');

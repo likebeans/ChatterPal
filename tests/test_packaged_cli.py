@@ -16,19 +16,51 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope="module")
-def installed_wheel(tmp_path_factory):
+def wheelhouse():
+    directory = os.environ.get("CHATTERPAL_TEST_WHEELHOUSE")
+    preparation = (
+        "Prepare base and build wheels from the checkout before offline tests:\n"
+        'export CHATTERPAL_TEST_WHEELHOUSE="$(mktemp -d)"\n'
+        "uv export --frozen --no-dev --no-emit-project --quiet --output-file "
+        '"$CHATTERPAL_TEST_WHEELHOUSE/base.txt"\n'
+        "uv run --no-project --python 3.12 --with pip python -m pip download "
+        '--only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" '
+        '--requirement "$CHATTERPAL_TEST_WHEELHOUSE/base.txt"\n'
+        "uv run --no-project --python 3.12 --with pip python -m pip download "
+        '--only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" '
+        "hatchling"
+    )
+    assert directory, preparation
+    path = Path(directory).resolve()
+    assert path.is_dir(), f"Missing packaged CLI wheelhouse: {path}\n{preparation}"
+    return path
+
+
+@pytest.fixture(scope="module")
+def installed_wheel(tmp_path_factory, wheelhouse):
     uv = shutil.which("uv")
     if uv is None:
         pytest.skip("Building the published CLI regression requires uv")
     root = tmp_path_factory.mktemp("published-cli")
     output = root / "dist"
+    # Frozen sync caches wheels without the registry metadata needed by a new
+    # resolver. Use prepared local files and a fresh cache for every test run.
+    offline_options = [
+        "--offline",
+        "--no-index",
+        "--find-links",
+        str(wheelhouse),
+        "--cache-dir",
+        str(root / "uv-cache"),
+        "--no-config",
+        "--no-python-downloads",
+    ]
     subprocess.run(
         [
             uv,
             "build",
             "--wheel",
-            "--offline",
-            "--no-python-downloads",
+            *offline_options,
             "--python",
             sys.executable,
             "--out-dir",
@@ -51,7 +83,7 @@ def installed_wheel(tmp_path_factory):
             uv,
             "pip",
             "install",
-            "--offline",
+            *offline_options,
             "--no-deps",
             "--python",
             str(python),
@@ -292,7 +324,9 @@ def test_demo_basic_needs_no_provider(monkeypatch, tmp_path, capsys):
     assert result["audio_sample_rate"] == 16000
 
 
-def test_base_wheel_config_commands_need_no_runtime_extras(installed_wheel, tmp_path):
+def test_base_wheel_config_commands_need_no_runtime_extras(
+    installed_wheel, tmp_path, wheelhouse
+):
     _, _, _, env = installed_wheel
     uv = shutil.which("uv")
     environment_root = tmp_path / "base-venv"
@@ -300,13 +334,28 @@ def test_base_wheel_config_commands_need_no_runtime_extras(installed_wheel, tmp_
     binary = environment_root / ("Scripts" if os.name == "nt" else "bin")
     python = binary / ("python.exe" if os.name == "nt" else "python")
     wheel = next(installed_wheel[2].parent.glob("dist/chatterpal-*.whl"))
-    subprocess.run(
-        [uv, "pip", "install", "--offline", "--python", str(python), str(wheel)],
-        check=True,
+    result = subprocess.run(
+        [
+            uv,
+            "pip",
+            "install",
+            "--offline",
+            "--no-index",
+            "--find-links",
+            str(wheelhouse),
+            "--cache-dir",
+            str(tmp_path / "uv-cache"),
+            "--no-config",
+            "--no-python-downloads",
+            "--python",
+            str(python),
+            str(wheel),
+        ],
         capture_output=True,
         text=True,
         timeout=30,
     )
+    assert result.returncode == 0, result.stderr
     outside = tmp_path / "outside"
     outside.mkdir()
     env = {

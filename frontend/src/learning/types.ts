@@ -32,7 +32,29 @@ export interface LearningAudio {
   expires_at?: string | null
 }
 
-export interface LearningTurn {
+export interface ConfirmedTranscription {
+  machine_transcript?: string | null
+  confirmed_text?: string | null
+  transcription_id?: string | null
+  confirmed_at?: string | null
+}
+
+export type TranscriptionContext =
+  | { kind: 'turn'; session_id: string; expected_revision: number }
+  | { kind: 'attempt'; session_id: string; source_revision: number; source_turn_id: string; focus_id: string | null; parent_attempt_id: string | null; mode: PracticeMode; target_text: string | null }
+  | { kind: 'review'; review_item_id: string; expected_revision: number }
+
+export interface LearningTranscription {
+  transcription_id: string
+  status: 'ready' | 'consumed' | 'expired'
+  context: TranscriptionContext
+  machine_transcript: string
+  audio: LearningAudio
+  received_at: string
+  expires_at: string
+}
+
+export interface LearningTurn extends ConfirmedTranscription {
   turn_id: string
   role: 'user' | 'assistant'
   text: string
@@ -86,7 +108,7 @@ export interface LearningEvaluation {
   source: 'text' | 'acoustic' | 'model' | 'self_report'
 }
 
-export interface LearningAttempt {
+export interface LearningAttempt extends ConfirmedTranscription {
   attempt_id: string
   session_id: string
   source_turn_id: string
@@ -201,6 +223,7 @@ export interface LearningProgress {
 export interface LearningOperation {
   operation_id: string
   request_id: string
+  action?: LearningAction
   status: 'pending' | 'succeeded' | 'failed' | 'interrupted'
   session_id?: string | null
   // Known results are validated by their discriminator; unknown result kinds refresh the session.
@@ -216,7 +239,9 @@ export interface LearningBootstrap {
   pending_operations: LearningOperation[]
 }
 
-export type LearningSubmission = { text: string; audio?: never } | { audio: Blob; text?: never }
+export type LearningSubmission =
+  | { text: string; transcription_id?: never; confirmed_text?: never }
+  | { transcription_id: string; confirmed_text: string; text?: never }
 
 export interface AttemptInput {
   mode: PracticeMode
@@ -227,7 +252,7 @@ export interface AttemptInput {
   submission: LearningSubmission
 }
 
-export type LearningAction = 'start' | 'turn' | 'hint' | 'finish' | 'feedback' | 'attempt' | 'example' | 'save-review' | 'review' | 'reveal' | 'review-hint' | 'defer-review' | 'profile' | 'delete'
+export type LearningAction = 'transcribe' | 'start' | 'turn' | 'hint' | 'finish' | 'feedback' | 'attempt' | 'example' | 'save-review' | 'review' | 'reveal' | 'review-hint' | 'defer-review' | 'profile' | 'delete'
 
 export interface LearningPending {
   request_id: string
@@ -241,8 +266,26 @@ export interface LearningPending {
 }
 
 export interface LearningHint { hint: string }
-export interface PracticeDraft { text: string; audio: Blob | null; version: number }
+export interface PracticeDraft {
+  text: string
+  audio: Blob | null
+  version: number
+  confirmationText: string
+  transcription: LearningTranscription | null
+  context: TranscriptionContext | null
+}
+export type PracticeDraftChanges = Partial<Pick<PracticeDraft, 'text' | 'audio' | 'confirmationText' | 'context'>>
 export interface DraftReceipt { draft_key: string; draft_version: number }
+export interface TranscriptionReceipt extends DraftReceipt {
+  learner_id: string
+  request_id: string
+  operation_id?: string
+  transcription_id: string
+}
+export interface ReadyTranscription {
+  receipt: TranscriptionReceipt
+  transcription: LearningTranscription
+}
 export interface LearningConfirmation {
   request_id: string
   action: LearningAction

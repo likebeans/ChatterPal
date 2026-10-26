@@ -1,4 +1,4 @@
-import type { LearningAttempt, LearningAudio, LearningBootstrap, LearningCoaching, LearningFeedback, LearningFocus, LearningHint, LearningOperation, LearningProfile, LearningProgress, LearningReview, LearningReviewAttempt, LearningSession, LearningTask, LearningTextSuggestion, LearningTurn, ReviewHint, ReviewResult, ReviewReveal } from './types'
+import type { LearningAttempt, LearningAudio, LearningBootstrap, LearningCoaching, LearningFeedback, LearningFocus, LearningHint, LearningOperation, LearningProfile, LearningProgress, LearningReview, LearningReviewAttempt, LearningSession, LearningTask, LearningTextSuggestion, LearningTranscription, LearningTurn, TranscriptionContext, ReviewHint, ReviewResult, ReviewReveal } from './types'
 
 type ObjectValue = Record<string, unknown>
 export function isObject(value: unknown): value is ObjectValue { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -26,9 +26,26 @@ export function isAudio(value: unknown): value is LearningAudio {
   return isObject(value) && choice(value.state, ['available', 'not_saved', 'expired', 'unavailable'])
     && optionalText(value.url) && optionalText(value.audio_asset_id) && optionalText(value.expires_at)
 }
+export function isTranscriptionContext(value: unknown): value is TranscriptionContext {
+  if (!isObject(value)) return false
+  if (value.kind === 'turn') return text(value.session_id) && revision(value.expected_revision)
+  if (value.kind === 'review') return text(value.review_item_id) && revision(value.expected_revision)
+  return value.kind === 'attempt' && text(value.session_id) && revision(value.source_revision) && text(value.source_turn_id)
+    && nullableText(value.focus_id) && nullableText(value.parent_attempt_id) && choice(value.mode, ['free_response', 'read_aloud']) && nullableText(value.target_text)
+}
+export function isTranscription(value: unknown): value is LearningTranscription {
+  return isObject(value) && text(value.transcription_id) && choice(value.status, ['ready', 'consumed', 'expired'])
+    && isTranscriptionContext(value.context) && text(value.machine_transcript) && isAudio(value.audio) && text(value.received_at) && text(value.expires_at)
+}
+function isConfirmedText(value: ObjectValue) {
+  return ['machine_transcript', 'confirmed_text', 'transcription_id', 'confirmed_at'].every(key => optionalText(value[key]))
+}
+export function sameTranscriptionContext(first: TranscriptionContext, second: TranscriptionContext) {
+  return Object.keys(first).length === Object.keys(second).length && Object.entries(first).every(([key, value]) => second[key as keyof TranscriptionContext] === value)
+}
 export function isTurn(value: unknown): value is LearningTurn {
   return isObject(value) && text(value.turn_id) && choice(value.role, ['user', 'assistant']) && text(value.text)
-    && (value.audio == null || isAudio(value.audio))
+    && (value.audio == null || isAudio(value.audio)) && isConfirmedText(value)
 }
 function isTextSuggestion(value: unknown): value is LearningTextSuggestion {
   return isObject(value) && ['original', 'corrected', 'explanation'].every(key => text(value[key]) && Boolean(value[key].trim()))
@@ -52,7 +69,7 @@ export function isAttempt(value: unknown): value is LearningAttempt {
     && nullableText(value.focus_id) && nullableText(value.parent_attempt_id) && choice(value.mode, ['read_aloud', 'free_response'])
     && (value.feedback === null || isFeedback(value.feedback)) && isObject(value.evaluation) && available(value.evaluation.status)
     && choice(value.evaluation.result, ['met', 'not_met', 'unverified']) && source(value.evaluation.source) && text(value.evaluation.reason)
-    && (value.audio == null || isAudio(value.audio))
+    && (value.audio == null || isAudio(value.audio)) && isConfirmedText(value)
 }
 export function isSession(value: unknown): value is LearningSession {
   if (!isObject(value) || !array(value.turns, isTurn)) return false
@@ -71,6 +88,7 @@ export function isOperation(value: unknown): value is LearningOperation {
     || !optionalText(value.result_type)
     || !(value.error == null || (isObject(value.error) && text(value.error.code) && text(value.error.message)))) return false
   if (value.status !== 'succeeded') return true
+  if (value.result_type === 'transcription') return isTranscription(value.result)
   if (value.result_type === 'session') return isSession(value.result)
   if (value.result_type === 'hint') return isHint(value.result)
   if (value.result_type === 'attempt') return isAttempt(value.result)

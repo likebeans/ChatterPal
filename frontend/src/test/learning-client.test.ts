@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { bootstrapLearning, learningApi, LearningApiError, parseOperation, parseSession, resetLearningIdentity, submissionBody } from '../learning/client'
+import { bootstrapLearning, learningApi, LearningApiError, parseOperation, parseSession, resetLearningIdentity, transcriptionBody } from '../learning/client'
 import { bytes, deferred } from './setup'
-import { learningBootstrap, learningSession, operation } from './learning-fixtures'
+import { learningBootstrap, learningSession, learningTranscription, operation, transcriptionOperation } from './learning-fixtures'
 import type { LearningSession } from '../learning/types'
 
 const { transportRequest } = vi.hoisted(() => ({ transportRequest: vi.fn() }))
@@ -101,20 +101,41 @@ describe('learning HTTP boundary', () => {
     await expect(learningApi.reviews()).rejects.toMatchObject({ status, code, message: 'Server explanation', uncertain: false })
   })
 
-  it('sends real attempt audio multipart without null optional fields or a simultaneous text answer', async () => {
-    const form = submissionBody({ session_id: 'session-1', source_revision: 4, source_turn_id: 'turn-1', focus_id: null, parent_attempt_id: null,
-      mode: 'free_response', target_text: null, text: undefined }, new Blob(['recording'], { type: 'audio/wav' }))
-    transportRequest.mockResolvedValueOnce({ data: { ...operation(), request_id: 'attempt-request' } })
-    await learningApi.mutate('/attempts', form, 'attempt-request')
-    expect(form).toBeInstanceOf(FormData)
-    const data = form as FormData
-    expect(data.get('request_id')).toBe('attempt-request')
-    expect(data.get('source_revision')).toBe('4')
-    expect(data.has('target_text')).toBe(false)
-    expect(data.has('parent_attempt_id')).toBe(false)
-    expect(data.has('focus_id')).toBe(false)
-    expect(data.has('text')).toBe(false)
-    expect((data.get('audio') as File).type).toBe('audio/wav')
+  it('sends preview audio with JSON context and submits confirmed text as JSON', async () => {
+    const context = { kind: 'attempt' as const, session_id: 'session-1', source_revision: 4, source_turn_id: 'turn-1', focus_id: null, parent_attempt_id: null, mode: 'free_response' as const, target_text: null }
+    const form = transcriptionBody(context, new Blob(['recording'], { type: 'audio/wav' }))
+    transportRequest.mockResolvedValueOnce({ data: transcriptionOperation(context, 'preview-request') })
+    await learningApi.mutate('/transcriptions', form, 'preview-request')
+    expect(form.get('request_id')).toBe('preview-request')
+    expect(JSON.parse(String(form.get('context')))).toEqual(context)
+    expect(form.has('text')).toBe(false)
+    expect((form.get('audio') as File).type).toBe('audio/wav')
+    transportRequest.mockResolvedValueOnce({ data: { ...operation(learningSession()), request_id: 'final-request' } })
+    await learningApi.mutate('/attempts', { session_id: 'session-1', source_revision: 4, transcription_id: 'transcription-1', confirmed_text: 'I went hiking.' }, 'final-request')
+    expect(transportRequest).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'post', url: '/attempts', data: { session_id: 'session-1', source_revision: 4, transcription_id: 'transcription-1', confirmed_text: 'I went hiking.', request_id: 'final-request' } }))
+  })
+
+  it('gets transcription views directly and deletes ready IDs or pending request IDs', async () => {
+    const view = learningTranscription(undefined, 'draft/1')
+    transportRequest.mockResolvedValueOnce({ data: view })
+    expect(await learningApi.getTranscription('draft/1')).toEqual(view)
+    expect(transportRequest).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'get', url: '/transcriptions/draft%2F1' }))
+    transportRequest.mockResolvedValueOnce({ data: undefined })
+    await learningApi.deleteTranscription('draft/1')
+    expect(transportRequest).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'delete', url: '/transcriptions/draft%2F1' }))
+    transportRequest.mockResolvedValueOnce({ data: undefined })
+    await learningApi.deleteTranscriptionRequest('request/1')
+    expect(transportRequest).toHaveBeenLastCalledWith(expect.objectContaining({ method: 'delete', url: '/transcriptions/requests/request%2F1' }))
+    transportRequest.mockResolvedValueOnce({ data: view })
+    await expect(learningApi.getTranscription('different-id')).rejects.toMatchObject({ code: 'invalid_response' })
+  })
+
+  it.each([
+    { machine_transcript: null }, { status: 'pending' }, { audio: { state: 'invalid' } },
+    { context: { kind: 'turn', session_id: 'session-1', expected_revision: 0 } },
+    { context: { kind: 'attempt', session_id: 'session-1', source_revision: 1, source_turn_id: 'turn-1', mode: 'free_response' } },
+  ])('rejects incomplete transcription success before releasing its pending receipt: %j', changes => {
+    expect(() => parseOperation({ ...transcriptionOperation(), result: { ...learningTranscription(), ...changes } })).toThrow(LearningApiError)
   })
 
   it('accepts optional coaching from real session record and operation snapshots', async () => {

@@ -6,7 +6,7 @@ import { LearningApiError, resetLearningIdentity } from '../learning/client'
 import { useLearningFlow } from '../learning/useLearningFlow'
 import { renderHook } from '@testing-library/react'
 import { contexts, deferred, emitAudio, streams, tone } from './setup'
-import { learningBootstrap, learningFeedback, learningSession, mockLearningApi, operation } from './learning-fixtures'
+import { learningBootstrap, learningFeedback, learningSession, mockLearningApi, operation, transcriptionOperation } from './learning-fixtures'
 import type { LearningOperation, LearningSession } from '../learning/types'
 
 beforeEach(() => {
@@ -127,11 +127,18 @@ describe('learning workflow', () => {
     fireEvent.click(screen.getByRole('button', { name: '停止录音' }))
     expect(await screen.findByRole('button', { name: '试听本次录音' })).toBeVisible()
     expect(api.mutate).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: '发送任务回答' }))
-    await waitFor(() => expect(api.mutate).toHaveBeenCalledOnce())
+    vi.mocked(api.mutate).mockImplementationOnce(async (_path, _payload, requestId) => transcriptionOperation(undefined, requestId))
+    fireEvent.click(screen.getByRole('button', { name: '识别并核对录音' }))
+    const confirmation = await screen.findByRole('textbox', { name: '核对录音文字' })
+    expect(confirmation).toHaveValue('I go hiking yesterday.')
+    expect(api.session).not.toHaveBeenCalled()
     const form = vi.mocked(api.mutate).mock.calls[0][1] as FormData
     expect((form.get('audio') as File).type).toBe('audio/wav')
-    expect(form.get('expected_revision')).toBe('1')
+    expect(JSON.parse(String(form.get('context')))).toEqual({ kind: 'turn', session_id: 'session-1', expected_revision: 1 })
+    fireEvent.change(confirmation, { target: { value: 'I went hiking yesterday.' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认文字并提交' }))
+    await waitFor(() => expect(api.mutate).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(api.mutate).mock.calls[1][1]).toEqual({ expected_revision: 1, transcription_id: 'transcription-1', confirmed_text: 'I went hiking yesterday.' })
   })
 
   it('starts another task without inheriting the previous session when an async response omits its session ID', async () => {

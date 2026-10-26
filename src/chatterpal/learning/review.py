@@ -11,6 +11,7 @@ from .review_rules import next_due, scheduling_evidence, timestamp, utc
 from .sessions import TaskSession
 from .storage import StoreError
 from .tasks import TaskDefinition
+from .transcription import confirmed_submission, consume_spec, review_context
 
 
 def utc_now():
@@ -73,6 +74,10 @@ def public_record(record, *, clock=utc_now):
             "parent_attempt_id",
             "mode",
             "transcript",
+            "machine_transcript",
+            "confirmed_text",
+            "transcription_id",
+            "confirmed_at",
             "feedback",
             "evaluation",
             "created_at",
@@ -354,7 +359,9 @@ class LearningReviewService:
             "data": item,
         }
 
-    def _submit(self, owner, record, body, action, work, *, payload=None):
+    def _submit(
+        self, owner, record, body, action, work, *, payload=None, transcription=None
+    ):
         return self.runtime.submit(
             owner,
             body.request_id,
@@ -371,6 +378,7 @@ class LearningReviewService:
             session_id=record["session_id"],
             record_id=record["record_id"],
             expected_revision=body.expected_revision,
+            transcription_consume=transcription,
         )
 
     def assist(self, owner, item_id, body, kind):
@@ -503,7 +511,7 @@ class LearningReviewService:
     def attempt(self, owner, item_id, body: ReviewAttemptRequest, audio=None):
         record = self._review(owner, item_id)
         payload = {
-            **body.model_dump(mode="json"),
+            **body.submission_payload(),
             "review_item_id": item_id,
             "audio_sha256": (
                 hashlib.sha256(audio).hexdigest() if audio is not None else None
@@ -515,13 +523,26 @@ class LearningReviewService:
 
         def work(claim):
             item = copy.deepcopy(record["data"])
-            if (body.text is None) == (audio is None):
-                raise StoreError(
-                    "input_required", "请选择文字或录音其中一种方式回答。", 422
+            provenance = confirmed_submission(
+                self.repository,
+                owner,
+                body,
+                review_context(item_id, body),
+                self.clock(),
+            )
+            if provenance:
+                draft = self.repository.get_transcription(owner, body.transcription_id)
+                text = body.confirmed_text
+            else:
+                if (body.text is None) == (audio is None):
+                    raise StoreError(
+                        "input_required", "请选择文字或录音其中一种方式回答。", 422
+                    )
+                if audio is not None:
+                    self.repository._validate_audio(audio)
+                text = (
+                    self.provider.recognize(audio) if audio is not None else body.text
                 )
-            if audio is not None:
-                self.repository._validate_audio(audio)
-            text = self.provider.recognize(audio) if audio is not None else body.text
             if not isinstance(text, str) or not text.strip():
                 raise StoreError(
                     "no_speech", "未识别到有效表达，请重新录音或输入文字。", 422
@@ -530,7 +551,7 @@ class LearningReviewService:
                 raise StoreError(
                     "text_too_large", "这段表达过长，请分成较短的回答。", 413
                 )
-            now = submitted_at
+            now = timestamp(draft["received_at"]) if provenance else submitted_at
             early = now < timestamp(item["due_at"]) and item["cycle"] < len(
                 item["task_snapshot"]["transfer_questions"]
             )
@@ -570,13 +591,18 @@ class LearningReviewService:
                 "parent_attempt_id": item["source_attempt_id"],
                 "mode": "free_response",
                 "transcript": text,
+                **(provenance or {}),
                 "feedback": None,
                 "evaluation": assessment,
                 "created_at": now.isoformat(),
                 "audio": (
-                    {"audio_key": "review"}
-                    if audio is not None
-                    else {"state": "not_saved"}
+                    {"audio_key": "transcription"}
+                    if provenance
+                    else (
+                        {"audio_key": "review"}
+                        if audio is not None
+                        else {"state": "not_saved"}
+                    )
                 ),
                 "question_id": "early-practice" if early else question.question_id,
                 "prompt": (
@@ -631,7 +657,15 @@ class LearningReviewService:
                 "audio": assets,
             }
 
-        return self._submit(owner, record, body, "review", work, payload=payload)
+        return self._submit(
+            owner,
+            record,
+            body,
+            "review",
+            work,
+            payload=payload,
+            transcription=consume_spec(body, review_context(item_id, body)),
+        )
 
     def progress(self, owner):
         sessions = [record["data"] for record in self._records(owner, "session")]

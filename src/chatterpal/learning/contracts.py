@@ -2,7 +2,14 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StringConstraints,
+    model_validator,
+)
 from typing_extensions import Annotated
 
 RequestId = Annotated[
@@ -75,6 +82,10 @@ class Attempt(Contract):
     parent_attempt_id: str | None
     mode: Literal["read_aloud", "free_response"]
     transcript: str
+    machine_transcript: str | None = None
+    confirmed_text: str | None = None
+    transcription_id: str | None = None
+    confirmed_at: str | None = None
     feedback: Feedback | None = None
     evaluation: Evaluation
     audio: dict[str, Any] | None = None
@@ -97,11 +108,36 @@ class HintRequest(SessionWrite):
     kind: Literal["sentence_starter", "simpler_question"] = "sentence_starter"
 
 
-class TurnRequest(SessionWrite):
+class Submission(Contract):
     text: Text | None = None
+    transcription_id: Identifier | None = None
+    confirmed_text: Text | None = None
+
+    @model_validator(mode="after")
+    def confirmation_pair(self):
+        if (self.transcription_id is None) != (self.confirmed_text is None):
+            raise ValueError(
+                "transcription_id and confirmed_text are required together"
+            )
+        if self.transcription_id is not None and self.text is not None:
+            raise ValueError("A confirmed transcription cannot be mixed with text")
+        return self
+
+    def submission_payload(self):
+        # Preserve the exact pre-confirmation fingerprint for existing requests.
+        excluded = (
+            {"transcription_id", "confirmed_text"}
+            if self.transcription_id is None
+            else set()
+        )
+        return self.model_dump(mode="json", exclude=excluded)
 
 
-class AttemptRequest(Contract):
+class TurnRequest(SessionWrite, Submission):
+    pass
+
+
+class AttemptRequest(Submission):
     request_id: RequestId
     session_id: Identifier
     source_revision: StrictInt = Field(ge=1)
@@ -135,8 +171,42 @@ class ReviewHintRequest(ReviewWrite):
     kind: Literal["sentence_starter", "simpler_question"] = "sentence_starter"
 
 
-class ReviewAttemptRequest(ReviewWrite):
-    text: Text | None = None
+class ReviewAttemptRequest(ReviewWrite, Submission):
+    pass
+
+
+class TurnTranscriptionContext(Contract):
+    kind: Literal["turn"]
+    session_id: Identifier
+    expected_revision: StrictInt = Field(ge=1)
+
+
+class AttemptTranscriptionContext(Contract):
+    kind: Literal["attempt"]
+    session_id: Identifier
+    source_revision: StrictInt = Field(ge=1)
+    source_turn_id: Identifier
+    focus_id: Identifier | None
+    parent_attempt_id: Identifier | None
+    mode: Literal["free_response", "read_aloud"]
+    target_text: Text | None
+
+
+class ReviewTranscriptionContext(Contract):
+    kind: Literal["review"]
+    review_item_id: Identifier
+    expected_revision: StrictInt = Field(ge=1)
+
+
+TranscriptionContext = Annotated[
+    TurnTranscriptionContext | AttemptTranscriptionContext | ReviewTranscriptionContext,
+    Field(discriminator="kind"),
+]
+
+
+class TranscriptionRequest(Contract):
+    request_id: RequestId
+    context: TranscriptionContext
 
 
 class ReviewDeferRequest(ReviewWrite):

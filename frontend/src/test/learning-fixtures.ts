@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 import type { LearningApi } from '../learning/client'
-import type { LearningBootstrap, LearningFeedback, LearningOperation, LearningSession, LearningTask } from '../learning/types'
+import type { LearningBootstrap, LearningFeedback, LearningOperation, LearningSession, LearningTask, LearningTranscription, TranscriptionContext } from '../learning/types'
 
 export const learningTask: LearningTask = {
   task_id: 'weekend', content_version: '1', title: '描述周末', description: '告诉教练你做了什么，和谁一起，有什么感受。', estimated_minutes: 8,
@@ -26,6 +26,13 @@ export function operation(session?: LearningSession, status: LearningOperation['
   return { operation_id: 'operation-1', request_id: 'request-1', status, session_id: session?.session_id,
     result_type: session ? 'session' : undefined, result: session }
 }
+export function learningTranscription(context: TranscriptionContext = { kind: 'turn', session_id: 'session-1', expected_revision: 1 }, id = 'transcription-1'): LearningTranscription {
+  return { transcription_id: id, status: 'ready', context, machine_transcript: 'I go hiking yesterday.',
+    audio: { state: 'available', audio_asset_id: 'draft-audio', url: '/api/learning/audio/draft-audio' }, received_at: '2026-10-26T08:00:00Z', expires_at: '2026-10-26T09:00:00Z' }
+}
+export function transcriptionOperation(context?: TranscriptionContext, requestId = 'transcription-request', id?: string): LearningOperation {
+  return { operation_id: 'transcription-operation', request_id: requestId, status: 'succeeded', action: 'transcribe', result_type: 'transcription', result: learningTranscription(context, id) }
+}
 export function mockLearningApi(): LearningApi {
   return {
     bootstrap: vi.fn(async () => structuredClone(learningBootstrap)),
@@ -37,6 +44,9 @@ export function mockLearningApi(): LearningApi {
     progress: vi.fn(async () => ({ sessions_completed: 0, attempts_count: 0, retries_count: 0, reviews_completed: 0, independent_transfer_count: 0, evidence: [] })),
     profile: vi.fn(async profile => profile),
     mutate: vi.fn(async () => operation(learningSession())),
+    getTranscription: vi.fn(async (id: string) => learningTranscription(undefined, id)),
+    deleteTranscription: vi.fn(async () => {}),
+    deleteTranscriptionRequest: vi.fn(async () => {}),
     operation: vi.fn(async () => operation(learningSession())),
     requestStatus: vi.fn(async () => { throw new Error('No request lookup configured') }),
     exportData: vi.fn(async () => new Blob(['{"records":[]}'], { type: 'application/json' })),

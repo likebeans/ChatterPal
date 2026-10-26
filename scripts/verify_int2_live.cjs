@@ -253,7 +253,9 @@ function decodeAudio(file) {
     assert.equal(await composer.inputValue(), initialText);
     await submit(page.getByRole('button', { name: '发送任务回答', exact: true }), '/turns', 'text-turn-1');
     await recordSpeech();
-    await submit(page.getByRole('button', { name: '发送任务回答', exact: true }), '/turns', 'audio-turn-2');
+    await submit(page.getByRole('button', { name: '识别并核对录音', exact: true }), '/transcriptions', 'transcribe-turn-2');
+    await page.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor();
+    await submit(page.getByRole('button', { name: '确认文字并提交', exact: true }), '/turns', 'audio-turn-2');
     await composer.fill('It was relaxing because we could talk and enjoy the fresh air.');
     await submit(page.getByRole('button', { name: '发送任务回答', exact: true }), '/turns', 'text-turn-3');
     const active = await session();
@@ -291,7 +293,9 @@ function decodeAudio(file) {
     await page.getByRole('textbox', { name: '我的新表达', exact: true }).fill('On Saturday, I hiked with two friends and felt relaxed in the fresh air.');
     await submit(page.getByRole('button', { name: '保存这次重练', exact: true }), '/attempts', 'text-retry-1');
     await recordSpeech();
-    await submit(page.getByRole('button', { name: '保存这次重练', exact: true }), '/attempts', 'audio-retry-2');
+    await submit(page.getByRole('button', { name: '识别并核对录音', exact: true }), '/transcriptions', 'transcribe-retry-2');
+    await page.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor();
+    await submit(page.getByRole('button', { name: '确认文字并提交', exact: true }), '/attempts', 'audio-retry-2');
     const before = await session();
     const chain = before.attempts.filter(attempt => attempt.focus_id === focus.focus_id && attempt.mode === 'free_response');
     assert.equal(chain.length, 3);

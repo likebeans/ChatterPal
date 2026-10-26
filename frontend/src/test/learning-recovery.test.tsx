@@ -4,7 +4,7 @@ import LearningWorkspace from '../learning/LearningWorkspace'
 import { LearningApiError } from '../learning/client'
 import { useLearningFlow } from '../learning/useLearningFlow'
 import type { LearningOperation, LearningSession } from '../learning/types'
-import { learningBootstrap, learningFeedback, learningSession, mockLearningApi, operation } from './learning-fixtures'
+import { learningBootstrap, learningFeedback, learningSession, mockLearningApi, operation, transcriptionOperation } from './learning-fixtures'
 import { deferred, emitAudio, objectUrls, tone } from './setup'
 
 beforeEach(() => {
@@ -80,12 +80,23 @@ describe('drafts and authoritative revisions', () => {
     fireEvent.click(screen.getByRole('button', { name: '试听本次录音' }))
     expect([...objectUrls.values()]).toContain(blob)
     expect(window.localStorage.getItem('chatterpal.learning.pending.v1')).toBeNull()
+    // Hint revisions never silently rebind an earlier recording.
+    expect(screen.getByRole('button', { name: '识别并核对录音' })).toBeDisabled()
+    expect(screen.getByText(/这段录音对应的练习内容已有更新/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '放弃本次录音' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: '试听本次录音' })).not.toBeInTheDocument())
+    await recordDraft()
     vi.mocked(api.mutate).mockImplementationOnce(async (_path, payload, requestId) => {
-      expect(payload).toBeInstanceOf(FormData)
-      expect((payload as FormData).get('expected_revision')).toBe(String(updated.revision))
+      expect(JSON.parse(String((payload as FormData).get('context'))).expected_revision).toBe(updated.revision)
+      return transcriptionOperation({ kind: 'turn', session_id: updated.session_id, expected_revision: updated.revision }, requestId)
+    })
+    fireEvent.click(screen.getByRole('button', { name: '识别并核对录音' }))
+    await screen.findByRole('textbox', { name: '核对录音文字' })
+    vi.mocked(api.mutate).mockImplementationOnce(async (_path, payload, requestId) => {
+      expect(payload).toMatchObject({ expected_revision: updated.revision, transcription_id: 'transcription-1' })
       return { ...operation({ ...updated, revision: updated.revision + 1 }), request_id: requestId }
     })
-    fireEvent.click(screen.getByRole('button', { name: '发送任务回答' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认文字并提交' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: '试听本次录音' })).not.toBeInTheDocument())
   })
 
@@ -191,7 +202,7 @@ describe('identity and terminal operation recovery', () => {
     const { api } = await open()
     await recordDraft()
     vi.mocked(api.mutate).mockRejectedValueOnce(new LearningApiError('Identity expired', '401'))
-    fireEvent.click(screen.getByRole('button', { name: '发送任务回答' }))
+    fireEvent.click(screen.getByRole('button', { name: '识别并核对录音' }))
     fireEvent.click(await screen.findByRole('button', { name: '重新连接学习服务' }))
     await waitFor(() => expect(api.bootstrap).toHaveBeenCalledTimes(2))
     expect(screen.getByRole('button', { name: '试听本次录音' })).toBeVisible()

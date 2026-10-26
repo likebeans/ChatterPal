@@ -30,6 +30,7 @@ RECORD_KINDS = {
     "attempt",
     "review",
     "review_attempt",
+    "transcription",
     "event",
 }
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_.:-]{8,128}\Z")
@@ -337,12 +338,33 @@ class LearningStore:
                 (_json(profile), learner_id),
             )
             if patch.get("retain_audio") is False:
+                # Revoke recognition too: a late ASR must not republish cleared audio.
+                connection.execute(
+                    "UPDATE operations SET status='interrupted', lease_token=NULL, lease_until=NULL, "
+                    "error_json=?, updated_at=? WHERE learner_id=? AND action='transcribe' AND status='pending'",
+                    (
+                        _json(
+                            {
+                                "code": "audio_cleared",
+                                "message": "原音已清除，请重新录音。",
+                            }
+                        ),
+                        self.clock(),
+                        learner_id,
+                    ),
+                )
                 connection.execute(
                     "DELETE FROM audio_assets WHERE learner_id=?", (learner_id,)
                 )
             return profile
 
-    def _validate_record(self, kind: str, session_id: str | None, data: Any) -> str:
+    def _validate_record(
+        self, kind: str, session_id: str | None, data: Any, *, transcription=False
+    ) -> str:
+        if kind == "transcription" and not transcription:
+            raise StoreError(
+                "business_route_required", "Use the transcription preview route", 403
+            )
         if not isinstance(kind, str) or kind not in RECORD_KINDS:
             raise StoreError("invalid_kind", "Unsupported learning record kind", 422)
         if session_id is not None and (
@@ -445,8 +467,10 @@ class LearningStore:
                 ).decode("ascii")
             return {"items": items, "next_cursor": next_cursor}
 
-    def _insert_record(self, connection, learner_id, kind, session_id, data_json):
-        record_id, now = str(uuid.uuid4()), self.clock()
+    def _insert_record(
+        self, connection, learner_id, kind, session_id, data_json, *, record_id=None
+    ):
+        record_id, now = record_id or str(uuid.uuid4()), self.clock()
         connection.execute(
             """INSERT INTO records
                (record_id, learner_id, kind, session_id, data_json, revision, created_at, updated_at)
@@ -585,6 +609,12 @@ class LearningStore:
             )
         data_json = _json(data)
         row = self._record_row(connection, learner_id, record_id)
+        if row["kind"] == "transcription":
+            raise StoreError(
+                "business_route_required",
+                "Transcriptions can only be confirmed or discarded",
+                403,
+            )
         if row["revision"] != expected_revision:
             raise StoreError(
                 "revision_conflict",
@@ -599,7 +629,9 @@ class LearningStore:
             connection, self._record_row(connection, learner_id, record_id)
         )
 
-    def _write_records(self, connection, learner_id, creates, updates):
+    def _write_records(
+        self, connection, learner_id, creates, updates, *, transcription=False
+    ):
         if len(creates) + len(updates) > 100:
             raise StoreError(
                 "too_many_records", "At most 100 records may be committed at once", 422
@@ -618,12 +650,19 @@ class LearningStore:
                 specification.get("session_id"),
                 specification.get("data"),
             )
-            data_json = self._validate_record(kind, session_id, data)
+            data_json = self._validate_record(
+                kind, session_id, data, transcription=transcription
+            )
             parent = specification.get("parent_record_id")
             if parent is not None:
                 self._record_row(connection, learner_id, parent)
             result = self._insert_record(
-                connection, learner_id, kind, session_id, data_json
+                connection,
+                learner_id,
+                kind,
+                session_id,
+                data_json,
+                record_id=specification.get("record_id"),
             )
             if parent is not None:
                 connection.execute(
@@ -727,7 +766,13 @@ class LearningStore:
     def delete_record(self, learner_id: str, record_id: str) -> None:
         with self._transaction(write=True) as connection:
             self._learner(connection, learner_id)
-            self._record_row(connection, learner_id, record_id)
+            row = self._record_row(connection, learner_id, record_id)
+            if row["kind"] == "transcription":
+                raise StoreError(
+                    "business_route_required",
+                    "Transcriptions can only be confirmed or discarded",
+                    403,
+                )
             connection.execute(
                 """WITH RECURSIVE descendants(record_id) AS (
                        SELECT record_id FROM records WHERE learner_id=? AND record_id=?
@@ -906,7 +951,12 @@ class LearningStore:
         ).fetchone()
         if row is not None:
             metadata = self._audio(row)
-            refreshed.update(state=metadata["state"], url=metadata["url"])
+            refreshed.update(
+                {
+                    key: metadata[key]
+                    for key in ("state", "url", "record_id", "expires_at")
+                }
+            )
         elif result.get("url") == f"/api/learning/audio/{asset_id}" or result.get(
             "state"
         ) in ("available", "expired", "not_saved", "unavailable"):
@@ -916,6 +966,22 @@ class LearningStore:
         return refreshed
 
     def _operation(self, connection, row) -> dict[str, Any]:
+        result = (
+            self._refresh_audio(
+                connection, row["learner_id"], json.loads(row["result_json"])
+            )
+            if row["result_json"]
+            else None
+        )
+        if row["result_type"] == "transcription" and result is not None:
+            draft = self._record_row(connection, row["learner_id"], row["result_id"])
+            data = json.loads(draft["data_json"])
+            result["status"] = data["status"]
+            if data["status"] == "ready" and (
+                data["expires_epoch"] <= self.clock()
+                or result["audio"]["state"] != "available"
+            ):
+                result["status"] = "expired"
         return {
             "operation_id": row["operation_id"],
             "request_id": row["request_id"],
@@ -923,13 +989,7 @@ class LearningStore:
             "session_id": row["session_id"],
             "result_type": row["result_type"],
             "result_id": row["result_id"],
-            "result": (
-                self._refresh_audio(
-                    connection, row["learner_id"], json.loads(row["result_json"])
-                )
-                if row["result_json"]
-                else None
-            ),
+            "result": result,
             "error": json.loads(row["error_json"]) if row["error_json"] else None,
         }
 
@@ -1013,6 +1073,7 @@ class LearningStore:
         record_id: str | None = None,
         expected_revision: int | None = None,
         exclusive_session: bool = False,
+        transcription_consume: dict[str, Any] | None = None,
     ) -> OperationClaim:
         _request_id(request_id)
         if (
@@ -1065,6 +1126,10 @@ class LearningStore:
                         "Learning record was updated by another request",
                         409,
                     )
+            if transcription_consume is not None:
+                self._checked_transcription(
+                    connection, learner_id, transcription_consume, record_id
+                )
             operation_id, lease_token, now = (
                 str(uuid.uuid4()),
                 secrets.token_urlsafe(32),
@@ -1090,6 +1155,14 @@ class LearningStore:
                     now,
                 ),
             )
+            if transcription_consume is not None:
+                self._link_operation_records(
+                    connection,
+                    operation_id,
+                    learner_id,
+                    None,
+                    transcription_consume["transcription_id"],
+                )
             row = connection.execute(
                 "SELECT * FROM operations WHERE operation_id=?", (operation_id,)
             ).fetchone()
@@ -1114,6 +1187,123 @@ class LearningStore:
             )
         return row
 
+    def validate_operation_claim(self, learner_id, operation_id, lease_token):
+        """Check durable revocation before a queued worker starts provider work."""
+        with self._transaction() as connection:
+            self._owned_claim(connection, learner_id, operation_id, lease_token)
+
+    def _checked_transcription(self, connection, learner_id, specification, source_id):
+        row = self._record_row(
+            connection, learner_id, specification["transcription_id"]
+        )
+        if row["kind"] != "transcription":
+            raise StoreError("transcription_not_found", "找不到这份录音转写。", 404)
+        data = json.loads(row["data_json"])
+        if data["status"] != "ready":
+            raise StoreError(
+                "transcription_consumed", "这份录音已经提交，请录制新的回答。", 409
+            )
+        if data["expires_epoch"] <= self.clock():
+            raise StoreError(
+                "transcription_expired", "录音核对已到期，请重新录音。", 410
+            )
+        if (
+            data["source_record_id"] != source_id
+            or data["context"] != specification["context"]
+        ):
+            raise StoreError(
+                "transcription_context_changed",
+                "这份录音不属于当前题目或练习版本，请重新录音。",
+                409,
+            )
+        source = self._record_row(connection, learner_id, source_id)
+        if source["revision"] != data["source_revision"]:
+            raise StoreError(
+                "revision_conflict", "练习版本已变化，请刷新后重新录音。", 409
+            )
+        asset = connection.execute(
+            "SELECT * FROM audio_assets WHERE learner_id=? AND audio_asset_id=?",
+            (learner_id, data["audio"]["audio_asset_id"]),
+        ).fetchone()
+        if (
+            asset is None
+            or asset["content"] is None
+            or asset["expires_at"] <= self.clock()
+        ):
+            raise StoreError(
+                "transcription_expired", "原音已到期或已清除，请重新录音。", 410
+            )
+        if (
+            asset["record_id"] != row["record_id"]
+            or asset["sha256"] != data["audio_sha256"]
+        ):
+            raise StoreError("invalid_transcription", "无法核对原音，请重新录音。", 409)
+        return row, data, asset
+
+    def get_transcription(self, learner_id, transcription_id):
+        with self._transaction() as connection:
+            self._learner(connection, learner_id)
+            row = self._record_row(connection, learner_id, transcription_id)
+            if row["kind"] != "transcription":
+                raise StoreError("transcription_not_found", "找不到这份录音转写。", 404)
+            data = self._refresh_audio(
+                connection, learner_id, json.loads(row["data_json"])
+            )
+            status = data["status"]
+            if status == "ready" and (
+                data["expires_epoch"] <= self.clock()
+                or data["audio"]["state"] != "available"
+            ):
+                status = "expired"
+            return {
+                key: data[key]
+                for key in (
+                    "transcription_id",
+                    "context",
+                    "machine_transcript",
+                    "audio",
+                    "received_at",
+                    "expires_at",
+                )
+            } | {"status": status}
+
+    def discard_transcription_request(self, learner_id, request_id):
+        with self._transaction(write=True) as connection:
+            self._learner(connection, learner_id)
+            operation = connection.execute(
+                "SELECT * FROM operations WHERE learner_id=? AND request_id=? AND action='transcribe'",
+                (learner_id, request_id),
+            ).fetchone()
+            if operation is None:
+                raise StoreError("operation_not_found", "找不到这次识别操作。", 404)
+            record_id = operation["result_id"]
+            if record_id is not None:
+                row = self._record_row(connection, learner_id, record_id)
+                if row["kind"] != "transcription":
+                    raise StoreError(
+                        "transcription_not_found", "找不到这份录音转写。", 404
+                    )
+                if json.loads(row["data_json"])["status"] == "consumed":
+                    raise StoreError(
+                        "transcription_consumed", "这份录音已保存为回答。", 409
+                    )
+                # Reuse the same deletion relations as normal source deletion.
+                connection.execute(
+                    "DELETE FROM operations WHERE learner_id=? AND operation_id IN "
+                    "(SELECT operation_id FROM operation_records WHERE record_id=?)",
+                    (learner_id, record_id),
+                )
+                connection.execute(
+                    "DELETE FROM records WHERE learner_id=? AND record_id=?",
+                    (learner_id, record_id),
+                )
+            else:
+                # Removing a pending claim prevents any late worker publication.
+                connection.execute(
+                    "DELETE FROM operations WHERE learner_id=? AND operation_id=?",
+                    (learner_id, operation["operation_id"]),
+                )
+
     @staticmethod
     def _resolve_audio_keys(value, assets):
         if isinstance(value, list):
@@ -1132,7 +1322,9 @@ class LearningStore:
             for key, item in value.items()
         }
 
-    def _complete_audio(self, connection, learner_id, target, writes, audio):
+    def _complete_audio(
+        self, connection, learner_id, target, writes, audio, references=None
+    ):
         if not isinstance(audio, list) or len(audio) > 100:
             raise StoreError(
                 "invalid_audio", "Provide at most 100 keyed audio assets", 422
@@ -1166,6 +1358,8 @@ class LearningStore:
                 assets[key] = self._insert_audio(
                     connection, learner_id, target, content, details, retain=retain
                 )
+
+        assets.update(references or {})
 
         # Resolve persisted snapshots without incrementing their revision a second time.
         # All rows and blobs remain uncommitted until the operation result is valid.
@@ -1201,6 +1395,8 @@ class LearningStore:
         creates: list[dict[str, Any]] | None = None,
         updates: list[dict[str, Any]] | None = None,
         audio: list[dict[str, Any]] | None = None,
+        transcription_consume: dict[str, Any] | None = None,
+        transcription_create: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Commit owned writes and optional audio with their HTTP result atomically.
 
@@ -1225,6 +1421,55 @@ class LearningStore:
                         "Learning record was updated by another request",
                         409,
                     )
+            if transcription_create is not None and claim["action"] != "transcribe":
+                raise StoreError(
+                    "business_route_required",
+                    "Use the transcription preview route",
+                    403,
+                )
+            references = {}
+            if (
+                transcription_create is not None
+                and transcription_create["expires_epoch"] <= self.clock()
+            ):
+                raise StoreError(
+                    "transcription_expired", "录音核对已到期，请重新录音。", 410
+                )
+            if transcription_consume is not None:
+                draft_row, draft, asset = self._checked_transcription(
+                    connection,
+                    learner_id,
+                    transcription_consume,
+                    claim["resource_record_id"],
+                )
+                profile = json.loads(
+                    self._learner(connection, learner_id)["profile_json"]
+                )
+                expires = (
+                    self.clock() + self.audio_retention_days * 86400
+                    if profile["retain_audio"]
+                    else asset["expires_at"]
+                )
+                connection.execute(
+                    "UPDATE audio_assets SET record_id=?, expires_at=? WHERE learner_id=? AND audio_asset_id=?",
+                    (
+                        claim["resource_record_id"],
+                        expires,
+                        learner_id,
+                        asset["audio_asset_id"],
+                    ),
+                )
+                metadata = connection.execute(
+                    f"SELECT {_AUDIO_METADATA} FROM audio_assets WHERE learner_id=? AND audio_asset_id=?",
+                    (learner_id, asset["audio_asset_id"]),
+                ).fetchone()
+                references["transcription"] = self._audio(metadata)
+                draft["status"] = "consumed"
+                draft["submission_operation_id"] = operation_id
+                connection.execute(
+                    "UPDATE records SET data_json=?, revision=revision+1, updated_at=? WHERE learner_id=? AND record_id=?",
+                    (_json(draft), self.clock(), learner_id, draft_row["record_id"]),
+                )
             supplied_result = result is not _NO_RESULT
             compound = creates is not None or updates is not None
             writes = {"created": {}, "updated": []}
@@ -1232,7 +1477,11 @@ class LearningStore:
                 if record is not None:
                     raise ValueError("Use compound records or a single record")
                 writes = self._write_records(
-                    connection, learner_id, creates or [], updates or []
+                    connection,
+                    learner_id,
+                    creates or [],
+                    updates or [],
+                    transcription=transcription_create is not None,
                 )
                 result_type = result_type or "records"
             if record is not None:
@@ -1252,20 +1501,21 @@ class LearningStore:
                     result_id = created["record_id"]
                 result_type = result_type or "record"
             assets = {}
-            if audio is not None:
+            if audio is not None or references:
                 writes, assets = self._complete_audio(
                     connection,
                     learner_id,
                     resource_record_id or claim["resource_record_id"],
                     writes,
-                    audio,
+                    audio if audio is not None else [],
+                    references,
                 )
             if not supplied_result:
                 if record is not None:
                     result = writes["created"]["record"]
                 else:
                     result = writes if compound else None
-            elif audio is not None:
+            elif audio is not None or references:
                 result = self._resolve_audio_keys(
                     json.loads(_json(result, MAX_JSON_BYTES * 2)), assets
                 )
@@ -1309,6 +1559,20 @@ class LearningStore:
             operation = self._operation(connection, row)
             # A transaction can outlive the lease while preparing audio or snapshots.
             # Check immediately before commit so every associated write rolls back.
+            if (
+                transcription_consume is not None
+                and draft["expires_epoch"] <= self.clock()
+            ):
+                raise StoreError(
+                    "transcription_expired", "录音核对已到期，请重新录音。", 410
+                )
+            if (
+                transcription_create is not None
+                and transcription_create["expires_epoch"] <= self.clock()
+            ):
+                raise StoreError(
+                    "transcription_expired", "录音核对已到期，请重新录音。", 410
+                )
             if claim["lease_until"] <= self.clock():
                 raise StoreError(
                     "operation_lease_lost", "Operation lease is no longer valid", 409

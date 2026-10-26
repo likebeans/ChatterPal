@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAudioPlayback } from '../hooks/useAudioPlayback'
-import { submissionBody } from './client'
+import { transcriptionBody } from './client'
 import type { LearningApi } from './client'
 import { PracticeInput } from './PracticeInput'
 import { isAudio, isHint, isReviewHint, isReviewResult, isReviewReveal } from './validation'
@@ -9,7 +9,7 @@ import { practiceDraftKey, usePracticeDrafts } from './usePracticeDrafts'
 import type { LearningView } from './useLearningFlow'
 import type {
   LearningAudio, LearningCoaching, LearningFocus, LearningProfile, LearningSession,
-  LearningSubmission, LearningTurn, PracticeMode,
+  ConfirmedTranscription, LearningSubmission, LearningTurn, PracticeDraftChanges, PracticeMode, TranscriptionContext,
 } from './types'
 import './learning.css'
 
@@ -25,6 +25,14 @@ function AudioButton({ audio, id, label, onPlay }: { audio?: LearningAudio | nul
   if (!audio || audio.state !== 'available') return <small className="learning-muted">{audio?.state === 'expired' ? '录音已到期，文字记录仍保留。' : '未保存可回放的音频。'}</small>
   const source = audio.url || (audio.audio_asset_id ? `/api/learning/audio/${encodeURIComponent(audio.audio_asset_id)}` : null)
   return source ? <button type="button" onClick={() => onPlay(source, id)}>{label}</button> : <small>音频暂不可用。</small>
+}
+
+function TranscriptHistory({ value }: { value: ConfirmedTranscription }) {
+  if (!value.transcription_id) return null
+  return <div className="learning-transcription-history"><strong>已核对的文字</strong>
+    <p className="learning-muted">文字反馈依据核对后的表达，不代表发音测量。</p>
+    {value.machine_transcript != null && value.machine_transcript !== value.confirmed_text && <details><summary>查看机器识别原文</summary><p lang="en">{value.machine_transcript}</p></details>}
+  </div>
 }
 
 function TurnCoaching({ coaching }: { coaching?: LearningCoaching }) {
@@ -59,7 +67,7 @@ function ProfileForm({ profile, disabled, onSave, onboarding = false }: { profil
         <option value="after_session">结束后集中反馈</option><option value="immediate">对话中适量提醒</option></select></label>
     </div>
     <label className="learning-checkbox"><input type="checkbox" checked={draft.retain_audio} onChange={event => setDraft({ ...draft, retain_audio: event.target.checked })} />将原音保留 7 天，方便之后对照</label>
-    <p className="learning-muted">默认保留文字学习记录，原音仅供 1 小时临时回放。当前浏览器身份用于找回记录；清除站点数据后暂不支持找回。未发送的文字和录音仅暂存于当前页面，刷新前请先发送。</p>
+    <p className="learning-muted">默认保留文字学习记录，原音仅供 1 小时临时回放。当前浏览器身份用于找回记录；清除站点数据后暂不支持找回。未发送的文字和录音仅暂存于当前页面；已经识别的录音可在有效期内恢复核对，刷新后未确认的修改会丢失。</p>
     <div className="learning-actions">
       <button type="button" className="learning-primary" disabled={disabled || saving} onClick={() => { void save() }}>{saving ? '正在保存…' : '保存偏好'}</button>
       {onboarding && <button type="button" disabled={disabled || saving} onClick={() => { void onSave({ ...profile, onboarding_completed: true }) }}>跳过引导</button>}
@@ -80,7 +88,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
   const focusHeading = useRef<HTMLHeadingElement>(null)
   const session = flow.session
   const owner = flow.identity?.learner_id
-  const drafts = usePracticeDrafts(owner, flow.confirmation)
+  const drafts = usePracticeDrafts(owner, flow.confirmation, flow.readyTranscriptions)
   const selectedPractice = session ? practiceBySession[session.session_id] : null
   const practiceTurnSnapshot = session?.turns.find(turn => turn.turn_id === selectedPractice?.turnId && turn.role === 'user')
   const practiceFocusSnapshot = session?.feedback?.focuses.find(focus => focus.focus_id === selectedPractice?.focusId && focus.source_turn_id === practiceTurnSnapshot?.turn_id) || null
@@ -89,7 +97,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
     if (session) setPracticeBySession(previous => ({ ...previous, [session.session_id]: value ? { turnId: value.turn.turn_id, focusId: value.focus?.focus_id || null, mode: value.mode } : null }))
   }
   const turnDraftKey = practiceDraftKey(owner, session?.session_id || '', 'turn')
-  const attemptDraftKey = practiceDraftKey(owner, session?.session_id || '', 'attempt', practice?.turn.turn_id || '', practice?.focus?.focus_id || '', practice?.mode || '')
+  const attemptDraftKey = practiceDraftKey(owner, session?.session_id || '', 'attempt', practice?.turn.turn_id || '', selectedPractice?.focusId || '', practice?.mode || '')
   const reviewDraftKey = practiceDraftKey(owner, review?.session_id || '', 'review', review?.review_item_id || '')
   const busy = Boolean(flow.pending) || flow.loading || Boolean(flow.recovery)
   const inSession = active && flow.view === 'session'
@@ -103,19 +111,45 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
   const perform = (action: Parameters<typeof flow.mutate>[0], path: string, data: Record<string, unknown> | FormData, sessionId = session?.session_id) => flow.mutate(action, path, data, sessionId)
   const sendTurn = (submission: LearningSubmission) => {
     if (!session) return Promise.resolve()
-    return flow.mutate('turn', `/sessions/${encodeURIComponent(session.session_id)}/turns`, submissionBody({ expected_revision: session.revision, text: submission.text }, submission.audio), session.session_id,
+    return flow.mutate('turn', `/sessions/${encodeURIComponent(session.session_id)}/turns`, { expected_revision: session.revision, ...submission }, session.session_id,
       { draft_key: turnDraftKey, draft_version: drafts.read(turnDraftKey).version })
   }
   const linkedAttempts = session?.attempts.filter(attempt => attempt.source_turn_id === practice?.turn.turn_id && attempt.focus_id === (practice?.focus?.focus_id || null)) || []
   const practiceAttempts = linkedAttempts.filter(attempt => attempt.mode === practice?.mode)
   const lastAttempt = practiceAttempts[practiceAttempts.length - 1]
   const exampleAttempt = lastAttempt || linkedAttempts[0]
+  const turnContext: TranscriptionContext = { kind: 'turn', session_id: session?.session_id || '', expected_revision: session?.revision || 1 }
+  const attemptContext: TranscriptionContext = { kind: 'attempt', session_id: session?.session_id || '', source_revision: session?.revision || 1,
+    source_turn_id: practice?.turn.turn_id || '', focus_id: practice?.focus?.focus_id || null, parent_attempt_id: lastAttempt?.attempt_id || null,
+    mode: practice?.mode || 'free_response', target_text: practice?.mode === 'read_aloud' ? practice.focus?.suggested || practice.turn.text : null }
+  const reviewContext: TranscriptionContext = { kind: 'review', review_item_id: review?.review_item_id || '', expected_revision: review?.revision || 1 }
+  const inputProps = (key: string, context: TranscriptionContext) => ({
+    context, draft: drafts.read(key),
+    transcribing: flow.pending?.action === 'transcribe' && flow.pending.draft_key === key,
+    onDraftChange: (changes: PracticeDraftChanges) => drafts.update(key, changes),
+    onTranscribe: (audio: Blob, pinnedContext: TranscriptionContext) => flow.mutate('transcribe', '/transcriptions', transcriptionBody(pinnedContext, audio),
+      pinnedContext.kind === 'review' ? review?.session_id : pinnedContext.session_id, { draft_key: key, draft_version: drafts.read(key).version }),
+    onDiscard: async () => {
+      const draft = drafts.read(key)
+      const draftVersion = flow.pending?.action === 'transcribe' && flow.pending.draft_key === key ? flow.pending.draft_version ?? draft.version : draft.version
+      await flow.cancelTranscription({ draft_key: key, draft_version: draftVersion }, draft.transcription?.transcription_id)
+      drafts.discard(key, draftVersion)
+    },
+  })
   const submitAttempt = (submission: LearningSubmission) => {
     if (!session || !practice) return Promise.resolve()
-    return flow.mutate('attempt', '/attempts', submissionBody({ session_id: session.session_id, source_revision: session.revision,
-      source_turn_id: practice.turn.turn_id, focus_id: practice.focus?.focus_id || null, parent_attempt_id: lastAttempt?.attempt_id || null,
-      mode: practice.mode, target_text: practice.mode === 'read_aloud' ? practice.focus?.suggested || practice.turn.text : null, text: submission.text }, submission.audio), session.session_id,
+    const { kind: _kind, ...fields } = attemptContext
+    return flow.mutate('attempt', '/attempts', { ...fields, ...submission }, session.session_id,
       { draft_key: attemptDraftKey, draft_version: drafts.read(attemptDraftKey).version })
+  }
+  const resumeTranscription = async (context: TranscriptionContext) => {
+    playback.stop()
+    if (context.kind === 'review') await flow.openReview(context.review_item_id)
+    else {
+      await flow.openSession(context.session_id)
+      setPracticeBySession(previous => ({ ...previous, [context.session_id]: context.kind === 'attempt'
+        ? { turnId: context.source_turn_id, focusId: context.focus_id, mode: context.mode } : null }))
+    }
   }
   const exportData = async () => {
     setExportError('')
@@ -153,6 +187,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
       <button type="button" disabled={flow.loading} onClick={() => { void flow.retryPending() }}>{flow.recovery === 'connect' ? '重新连接并查询原操作' : '查询原操作'}</button>
       {!flow.pending.operation_id && !flow.canReplay && <button type="button" onClick={() => { void flow.acknowledgeRecovery() }}>已核对历史，结束恢复提示</button>}
     </div>}
+    {flow.readyTranscriptions.length > 0 && <aside className="learning-notice" aria-label="待核对的录音"><p>还有录音等待核对，确认后才会提交回答。</p><div className="learning-actions">{flow.readyTranscriptions.map(({ receipt, transcription }) => <button type="button" key={receipt.transcription_id} disabled={flow.loading} onClick={() => { void resumeTranscription(transcription.context) }}>{transcription.context.kind === 'turn' ? '继续核对任务录音' : transcription.context.kind === 'attempt' ? '继续核对重练录音' : '继续核对复习录音'}</button>)}</div></aside>}
     {playback.error && <p className="learning-error" role="alert">{playback.error}</p>}
     {playback.playingId && <button type="button" onClick={playback.stop}>停止学习音频</button>}
     {!flow.identity && !flow.loading && !flow.error && <button type="button" onClick={() => { void flow.connect() }}>连接学习服务</button>}
@@ -176,11 +211,11 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
         <header className="learning-session-title"><div><span className="learning-eyebrow">{session.status === 'active' ? '正在练习' : '练习回顾'}</span><h3>{session.task.title}</h3><p>你是{session.task.learner_role}，教练扮演{session.task.coach_role}。</p></div><button type="button" onClick={() => { void flow.openSession(session.session_id) }}>刷新本次记录</button></header>
         <div className="learning-objectives"><strong>这次要说清楚</strong><ul>{session.task.objectives.map(item => <li key={item}>{item}</li>)}</ul></div>
         <details><summary>需要时看看示例表达</summary><ul>{session.task.examples.map(item => <li key={item}>{item}</li>)}</ul></details>
-        <div className="learning-conversation" role="log" aria-label="任务对话" aria-busy={Boolean(flow.pending)}>{session.turns.map(turn => <article key={turn.turn_id} className={`learning-turn learning-turn-${turn.role}`}><span>{turn.role === 'user' ? '我的表达' : '教练'}</span><p lang="en">{turn.text}</p>{turn.role === 'user' && <TurnCoaching coaching={session.coaching?.find(item => item.source_turn_id === turn.turn_id)} />}<div className="learning-inline"><AudioButton audio={turn.audio} id={turn.turn_id} label={turn.role === 'user' ? '回放这句原音' : '播放教练回复'} onPlay={play} />{turn.role === 'user' && <button type="button" onClick={() => practiceTurn(turn, session.feedback?.focuses.find(focus => focus.source_turn_id === turn.turn_id) || null)}>练这一句</button>}</div></article>)}</div>
+        <div className="learning-conversation" role="log" aria-label="任务对话" aria-busy={Boolean(flow.pending)}>{session.turns.map(turn => <article key={turn.turn_id} className={`learning-turn learning-turn-${turn.role}`}><span>{turn.role === 'user' ? '我的表达' : '教练'}</span><p lang="en">{turn.text}</p><TranscriptHistory value={turn} />{turn.role === 'user' && <TurnCoaching coaching={session.coaching?.find(item => item.source_turn_id === turn.turn_id)} />}<div className="learning-inline"><AudioButton audio={turn.audio} id={turn.turn_id} label={turn.role === 'user' ? '回放这句原音' : '播放教练回复'} onPlay={play} />{turn.role === 'user' && <button type="button" onClick={() => practiceTurn(turn, session.feedback?.focuses.find(focus => focus.source_turn_id === turn.turn_id) || null)}>练这一句</button>}</div></article>)}</div>
         {session.status === 'active' && !practice && <>
           <div className="learning-actions"><button type="button" disabled={busy} onClick={() => { void perform('hint', `/sessions/${encodeURIComponent(session.session_id)}/hints`, { expected_revision: session.revision, kind: 'sentence_starter' }) }}>给我一个开头</button><button type="button" disabled={busy || session.turns.every(turn => turn.role !== 'user')} onClick={() => { void perform('finish', `/sessions/${encodeURIComponent(session.session_id)}/finish`, { expected_revision: session.revision }) }}>结束对话，查看反馈</button></div>
           {flow.lastOperation?.session_id === session.session_id && isHint(flow.lastOperation.result) && <p className="learning-notice" role="status">{flow.lastOperation.result.hint}</p>}
-          <PracticeInput key={turnDraftKey} draft={drafts.read(turnDraftKey)} onDraftChange={changes => drafts.update(turnDraftKey, changes)} active={inSession} disabled={busy} label="我的任务回答" submitLabel="发送任务回答" onSubmit={sendTurn} onPlay={play} onStopPlayback={playback.stop} />
+          <PracticeInput key={turnDraftKey} {...inputProps(turnDraftKey, turnContext)} active={inSession} disabled={busy} label="我的任务回答" submitLabel="发送任务回答" onSubmit={sendTurn} onPlay={play} onStopPlayback={playback.stop} />
         </>}
         {session.status === 'completed' && (!session.feedback || session.feedback.status === 'unavailable') && <button type="button" className="learning-primary" disabled={busy} onClick={() => { void perform('feedback', `/sessions/${encodeURIComponent(session.session_id)}/feedback`, { expected_revision: session.revision }) }}>{session.feedback ? '重新生成本次反馈' : '生成本次重点反馈'}</button>}
         {session.feedback && <section className="learning-feedback" aria-label="练后重点反馈"><h4>这次练习的重点</h4>
@@ -198,9 +233,9 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
           {exampleAudio && <AudioButton audio={exampleAudio} id={`example-${exampleAttemptId}`} label="播放目标范读" onPlay={play} />}
           <div className="learning-attempts">{practiceAttempts.map((attempt, index) => {
             const parentIndex = practiceAttempts.findIndex(item => item.attempt_id === attempt.parent_attempt_id)
-            return <article key={attempt.attempt_id}><h5>{index === 0 ? '第一次练习' : `第 ${index + 1} 次练习`}</h5><p className="learning-muted">{attempt.parent_attempt_id ? `重练 · 接续${parentIndex >= 0 ? `第 ${parentIndex + 1} 次练习` : '此前的尝试'}` : '首次尝试 · 关联任务原话'}</p><p lang="en">{attempt.transcript}</p><p>{stateLabel[attempt.evaluation.result]} · {sourceLabel[attempt.evaluation.source]}</p><p>{attempt.evaluation.reason}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label={`回放第 ${index + 1} 次练习`} onPlay={play} /><button type="button" disabled={busy} onClick={() => saveReview(attempt.source_turn_id, attempt.focus_id, attempt.attempt_id)}>保存这次尝试到复习</button></article>
+            return <article key={attempt.attempt_id}><h5>{index === 0 ? '第一次练习' : `第 ${index + 1} 次练习`}</h5><p className="learning-muted">{attempt.parent_attempt_id ? `重练 · 接续${parentIndex >= 0 ? `第 ${parentIndex + 1} 次练习` : '此前的尝试'}` : '首次尝试 · 关联任务原话'}</p><p lang="en">{attempt.transcript}</p><TranscriptHistory value={attempt} /><p>{stateLabel[attempt.evaluation.result]} · {sourceLabel[attempt.evaluation.source]}</p><p>{attempt.evaluation.reason}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label={`回放第 ${index + 1} 次练习`} onPlay={play} /><button type="button" disabled={busy} onClick={() => saveReview(attempt.source_turn_id, attempt.focus_id, attempt.attempt_id)}>保存这次尝试到复习</button></article>
           })}</div>
-          <PracticeInput key={attemptDraftKey} draft={drafts.read(attemptDraftKey)} onDraftChange={changes => drafts.update(attemptDraftKey, changes)} active={inSession} disabled={busy} label={practice.mode === 'read_aloud' ? '我的跟读' : '我的新表达'} submitLabel={lastAttempt ? '保存这次重练' : '提交这次练习'} onSubmit={submitAttempt} onPlay={play} onStopPlayback={playback.stop} />
+          <PracticeInput key={attemptDraftKey} {...inputProps(attemptDraftKey, attemptContext)} active={inSession} disabled={busy} label={practice.mode === 'read_aloud' ? '我的跟读' : '我的新表达'} submitLabel={lastAttempt ? '保存这次重练' : '提交这次练习'} onSubmit={submitAttempt} onPlay={play} onStopPlayback={playback.stop} />
         </section>}
       </section>}
       {flow.view === 'review' && <section className="learning-section"><h3>先想一想，再开口</h3>
@@ -215,11 +250,11 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
             <button type="button" disabled={busy} onClick={() => { void perform('defer-review', `/reviews/${encodeURIComponent(review.review_item_id)}/defer`, { expected_revision: review.revision, days: 1 }, review.session_id) }}>明天再复习</button></div>
           {reviewHint && <p className="learning-notice" role="status" lang="en">{reviewHint}</p>}
           {revealedAnswer && <div><p className="learning-muted">保存时的参考表达，新的情境允许其他正确说法。</p><p className="learning-target" lang="en">{revealedAnswer}</p></div>}
-          {selectedReviewResult?.attempt && <div role="status"><p>刚才回答的问题：<span lang="en">{selectedReviewResult.attempt.prompt}</span></p><p lang="en">{selectedReviewResult.attempt.transcript}</p><p>{stateLabel[selectedReviewResult.attempt.evaluation.result]}：{selectedReviewResult.attempt.evaluation.reason}</p>
+          {selectedReviewResult?.attempt && <div role="status"><p>刚才回答的问题：<span lang="en">{selectedReviewResult.attempt.prompt}</span></p><p lang="en">{selectedReviewResult.attempt.transcript}</p><TranscriptHistory value={selectedReviewResult.attempt} /><p>{stateLabel[selectedReviewResult.attempt.evaluation.result]}：{selectedReviewResult.attempt.evaluation.reason}</p>
             <p>{selectedReviewResult.attempt.evidence_kind === 'shown_answer' ? '本次看过参考表达，按有提示练习记录。' : selectedReviewResult.attempt.evidence_kind === 'hinted' ? '本次使用提示，未计为独立迁移。' : selectedReviewResult.attempt.evidence_kind === 'early_practice' ? '本次在到期前作答，按提前练习记录。' : selectedReviewResult.attempt.evidence_kind === 'source_repeat' ? '本次复述原句或参考表达，未计为独立迁移。' : selectedReviewResult.attempt.evidence_kind === 'repeated_prompt' ? '新问题已用完，本次按重复问题练习记录。' : selectedReviewResult.attempt.schedule_advanced ? '本次到期后独立回答新问题，已保存文字达成证据。' : '本次回答已保存，尚无独立达成的完整证据。'}</p>
             <p>{selectedReviewResult.attempt.evaluation.status === 'unavailable' ? '评价暂不可用，复习时间和新问题均保留。' : selectedReviewResult.attempt.schedule_advanced ? '复习时间已按本次证据更新。' : '本次未延后复习时间。'}</p><p>下次复习：{date(selectedReviewResult.next_due_at)}</p><AudioButton audio={selectedReviewResult.attempt.audio} id={selectedReviewResult.attempt.attempt_id} label="回放本次复习录音" onPlay={play} /></div>}
-          {review.attempts && review.attempts.some(attempt => attempt.attempt_id !== selectedReviewResult?.attempt.attempt_id) && <section className="learning-attempts" aria-label="已保存的复习回答">{review.attempts.filter(attempt => attempt.attempt_id !== selectedReviewResult?.attempt.attempt_id).map(attempt => <article key={attempt.attempt_id}><h5>{date(attempt.created_at)} 的回答</h5><p lang="en">{attempt.prompt}</p><p lang="en">{attempt.transcript}</p><p>{stateLabel[attempt.evaluation.result]}：{attempt.evaluation.reason}</p><p>{attempt.schedule_advanced ? '到期后独立回答新问题，已有文字达成证据。' : attempt.used_hint ? '本次使用提示，按有提示练习保存。' : '本次按练习记录保存，未增加独立迁移记录。'}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label="回放已保存的复习录音" onPlay={play} /></article>)}</section>}
-          <PracticeInput key={reviewDraftKey} draft={drafts.read(reviewDraftKey)} onDraftChange={changes => drafts.update(reviewDraftKey, changes)} active={active && flow.view === 'review'} disabled={busy || !review.prompt_available} label="我的复习回答" submitLabel="提交复习回答" onSubmit={submission => flow.mutate('review', `/reviews/${encodeURIComponent(review.review_item_id)}/attempts`, submissionBody({ expected_revision: review.revision, text: submission.text }, submission.audio), review.session_id, { draft_key: reviewDraftKey, draft_version: drafts.read(reviewDraftKey).version })} onPlay={play} onStopPlayback={playback.stop} />
+          {review.attempts && review.attempts.some(attempt => attempt.attempt_id !== selectedReviewResult?.attempt.attempt_id) && <section className="learning-attempts" aria-label="已保存的复习回答">{review.attempts.filter(attempt => attempt.attempt_id !== selectedReviewResult?.attempt.attempt_id).map(attempt => <article key={attempt.attempt_id}><h5>{date(attempt.created_at)} 的回答</h5><p lang="en">{attempt.prompt}</p><p lang="en">{attempt.transcript}</p><TranscriptHistory value={attempt} /><p>{stateLabel[attempt.evaluation.result]}：{attempt.evaluation.reason}</p><p>{attempt.schedule_advanced ? '到期后独立回答新问题，已有文字达成证据。' : attempt.used_hint ? '本次使用提示，按有提示练习保存。' : '本次按练习记录保存，未增加独立迁移记录。'}</p><AudioButton audio={attempt.audio} id={attempt.attempt_id} label="回放已保存的复习录音" onPlay={play} /></article>)}</section>}
+          <PracticeInput key={reviewDraftKey} {...inputProps(reviewDraftKey, reviewContext)} active={active && flow.view === 'review'} disabled={busy || !review.prompt_available} label="我的复习回答" submitLabel="提交复习回答" onSubmit={submission => flow.mutate('review', `/reviews/${encodeURIComponent(review.review_item_id)}/attempts`, { expected_revision: review.revision, ...submission }, review.session_id, { draft_key: reviewDraftKey, draft_version: drafts.read(reviewDraftKey).version })} onPlay={play} onStopPlayback={playback.stop} />
         </div>}
       </section>}
       {flow.view === 'progress' && <section className="learning-section"><h3>看得见依据的练习进度</h3><p>练习投入、同题重练和新情境中的使用分别记录。当前没有经过校准的能力总分。</p>

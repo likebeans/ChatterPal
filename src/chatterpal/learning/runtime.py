@@ -75,6 +75,7 @@ class LearningRuntime:
         session_id: str | None = None,
         record_id: str | None = None,
         expected_revision: int | None = None,
+        transcription_consume: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             if self._closed:
@@ -108,6 +109,7 @@ class LearningRuntime:
                 expected_revision=expected_revision,
                 exclusive_session=session_id is not None,
                 lease_seconds=min(3600, max(1, int(self.operation_timeout) + 2)),
+                transcription_consume=transcription_consume,
             )
             if not claim.acquired:
                 self.metrics.increment("recovered")
@@ -117,7 +119,7 @@ class LearningRuntime:
             self._timings[operation_id] = timing
             try:
                 future = self._executor.submit(
-                    self._execute, owner, claim, work, timing
+                    self._execute, owner, claim, work, timing, transcription_consume
                 )
                 self._futures[operation_id] = future
                 timer = threading.Timer(
@@ -154,7 +156,7 @@ class LearningRuntime:
                 )
             self.metrics.observe("operation_total", elapsed, status=status, error=error)
 
-    def _execute(self, owner, claim, work, timing):
+    def _execute(self, owner, claim, work, timing, transcription_consume=None):
         with self._lock:
             # A timeout can revoke the queued claim just after the executor marks
             # its future running. Do not call a provider for that revoked claim.
@@ -163,8 +165,13 @@ class LearningRuntime:
             timing.started = perf_counter()
             self.metrics.observe("operation_queue", timing.started - timing.submitted)
         try:
+            self.repository.validate_operation_claim(
+                owner, claim.operation["operation_id"], claim.lease_token
+            )
             with metrics_context(self.metrics):
                 changes = work(claim)
+            if transcription_consume is not None:
+                changes["transcription_consume"] = transcription_consume
             completed = self.repository.complete_operation(
                 owner,
                 claim.operation["operation_id"],

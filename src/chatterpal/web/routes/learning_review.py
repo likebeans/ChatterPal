@@ -1,9 +1,12 @@
 """Review routes reuse the task runtime, providers and cookie identity dependency."""
 
 import asyncio
+import json
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
+from pydantic import ValidationError
+from starlette.datastructures import UploadFile
 
 from ...learning.contracts import (
     ReviewAttemptRequest,
@@ -11,8 +14,11 @@ from ...learning.contracts import (
     ReviewHintRequest,
     ReviewWrite,
     SaveReviewRequest,
+    TranscriptionRequest,
 )
 from ...learning.review import LearningReviewService
+from ...learning.storage import StoreError
+from ...learning.transcription import TranscriptionService
 from .learning_tasks import _submission
 
 
@@ -73,6 +79,46 @@ def mount_learning_review(app, settings, *, service=None):
         return await asyncio.to_thread(
             review_service().attempt, owner, review_item_id, body, audio
         )
+
+    def transcriptions():
+        return TranscriptionService(app.state.learning_service(), review_service())
+
+    @router.post("/transcriptions", status_code=202)
+    async def transcribe(request: Request, owner=Depends(identity)):
+        try:
+            async with request.form(max_files=1, max_fields=2) as form:
+                values = {}
+                for key, value in form.multi_items():
+                    if key in values:
+                        raise StoreError(
+                            "duplicate_field", "提交字段重复，请重新提交。", 422
+                        )
+                    values[key] = value
+                upload = values.pop("audio", None)
+                if not isinstance(upload, UploadFile):
+                    raise StoreError("invalid_audio", "请上传需要核对的录音。", 422)
+                values["context"] = json.loads(values.get("context", "null"))
+                body = TranscriptionRequest.model_validate(values)
+                audio = await upload.read(settings.learning_max_audio_bytes + 1)
+        except (ValidationError, ValueError, TypeError) as error:
+            raise StoreError(
+                "invalid_input", "请提供录音和有效的练习信息。", 422
+            ) from error
+        return await asyncio.to_thread(transcriptions().create, owner, body, audio)
+
+    @router.get("/transcriptions/{transcription_id}")
+    def get_transcription(transcription_id: str, owner=Depends(identity)):
+        return transcriptions().repository.get_transcription(owner, transcription_id)
+
+    @router.delete("/transcriptions/requests/{request_id}", status_code=204)
+    def discard_transcription_request(request_id: str, owner=Depends(identity)):
+        transcriptions().repository.discard_transcription_request(owner, request_id)
+        return Response(status_code=204)
+
+    @router.delete("/transcriptions/{transcription_id}", status_code=204)
+    def discard_transcription(transcription_id: str, owner=Depends(identity)):
+        transcriptions().discard(owner, transcription_id)
+        return Response(status_code=204)
 
     @router.get("/progress")
     def progress(owner=Depends(identity)):

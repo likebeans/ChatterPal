@@ -8,6 +8,7 @@ ChatterPal 是一个英语口语练习项目，提供 React + FastAPI 学习流�
 ## 当前功能
 
 - **任务学习**：人工编写的“描述周末”“点餐”“酒店入住”任务，保存任务版本、文字或录音回合、提示、结束反馈和关联重练。反馈最多选两个重点，引用本次原话。
+- **录音核对**：任务回答、重练和复习可先识别录音，核对或修改文字后再确认提交，也可试听、放弃或重录。机器转写与确认文字分别保留，同一份草稿只识别一次。
 - **记录恢复**：匿名 HttpOnly cookie 身份，SQLite 保存会话、反馈、尝试、操作状态及私有音频；支持刷新、API 重启、JSON 导出和删除个人数据。
 - **复习与进度**：明确保存重点表达后次日到期；只有延迟作答、未使用本轮提示且有新表达依据时，才按约 3 天、7 天排程。提示和看答案由服务端记录。当前每项任务只有两道人工迁移问题，用完后继续练习会标为重复问题，不增加独立迁移记录。
 - **自由聊天**：文字与录音输入、音色选择和音频播放。进程内会话有数量、闲置时间及历史长度限制；需要持久学习记录时使用任务入口。
@@ -110,7 +111,13 @@ docker compose ps
 
 ## 开发与验证
 
+打包测试使用明确准备的 wheelhouse，测试阶段禁用网络和索引，并为安装创建新缓存。首次或依赖锁变化后先执行以下准备命令（此阶段联网）：
+
 ```bash
+export CHATTERPAL_TEST_WHEELHOUSE="$(mktemp -d)"
+uv export --frozen --no-dev --no-emit-project --quiet --output-file "$CHATTERPAL_TEST_WHEELHOUSE/base.txt"
+uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" --requirement "$CHATTERPAL_TEST_WHEELHOUSE/base.txt"
+uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" hatchling
 uv run python -m pytest
 cd frontend
 npm test
@@ -118,12 +125,13 @@ npm run build
 npm run lint
 ```
 
-后端默认覆盖率门槛为 80%；2026-10-26 本工作树全量为 1960 项通过、覆盖率 87.27%，前端 155 项及 build/lint 通过，详见[剩余优化验收](docs/remaining_optimizations_acceptance_2026-10-26.md)。受控提供商的真实浏览器驱动为 `scripts/verify_int2_browser.cjs` 和 `scripts/verify_learning_review_browser.cjs`，真实提供商驱动为 `scripts/verify_int2_live.cjs`。后者会调用已配置的外部服务，需要可用凭据、Whisper 模型、Chrome 和音频工具；可用 `INT2_ENV_FILE` 指定本地配置文件。真实服务验收与受控基准分别记录。
+后端默认覆盖率门槛为 80%；当前录音核对工作树全量 1978 项通过、覆盖率 87.36%，前端 186 项及 build/lint 通过，专项实际浏览器三入口验收也通过，详见[CI 修复与录音核对验收](docs/transcript_confirmation_acceptance_2026-10-26.md)。main `d98b13b` 的历史结果保留在[剩余优化验收](docs/remaining_optimizations_acceptance_2026-10-26.md)。受控提供商的真实浏览器驱动为 `scripts/verify_int2_browser.cjs`、`scripts/verify_learning_review_browser.cjs` 和录音核对专项 `scripts/verify_transcript_confirmation_browser.cjs`；真实提供商驱动为 `scripts/verify_int2_live.cjs`。后者会调用已配置的外部服务，需要可用凭据、Whisper 模型、Chrome 和音频工具；可用 `INT2_ENV_FILE` 指定本地配置文件。真实服务验收与受控基准分别记录。
 
 ## 文档
 
 - [部署与配置](docs/deployment.md)
 - [学习 API 契约](docs/learning_api_contract.md)
+- [CI 修复与录音核对验收（2026-10-26）](docs/transcript_confirmation_acceptance_2026-10-26.md)
 - [剩余优化与复习验收（2026-10-26）](docs/remaining_optimizations_acceptance_2026-10-26.md)
 - [SQLite 学习存储契约](docs/learning_store_contract.md)
 - [INT2 离线与浏览器验收](docs/int2_weekend_acceptance.md)

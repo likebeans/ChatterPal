@@ -84,6 +84,9 @@
 .learning-stat-list > div { display: flex; justify-content: space-between; gap: 18px; padding-block: 12px; border-bottom: 1px solid var(--learn-border); }
 .learning-stat-list dd { font-variant-numeric: tabular-nums; font-weight: 650; }
 .learning-workspace summary { cursor: pointer; min-height: 44px; padding-block: 8px; }
+.learning-transcription { display: grid; gap: 10px; padding: 14px 18px; border: 1px solid var(--learn-border); border-radius: 8px; background: var(--learn-soft); }
+.learning-transcription p, .learning-transcription-history p { white-space: pre-wrap; }
+.learning-composer button { max-width: 100%; overflow-wrap: anywhere; }
 @media (max-width: 700px) {
   .learning-heading { flex-direction: column; }
   .learning-speed { flex: auto; width: 160px; }

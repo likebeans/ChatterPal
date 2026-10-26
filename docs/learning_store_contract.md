@@ -1,6 +1,6 @@
 # A2 学习数据存储契约
 
-状态：2026-10-25，A2 存储实现已接入 INT2。本文保留独立存储接口和 A2 历史验收依据；正式教学流程、DTO、runtime 和音频语义以 [INT2 学习 API 契约](learning_api_contract.md) 为准。集成基线为 main `6d67fbc`，复用 A2 `c520010`；“描述周末”的会话、反馈、关联重练、操作恢复均使用本仓储，复习排程尚未接入。
+状态：2026-10-26，A2 存储已接入 INT2、复习和进度，main 基线为 `d98b13b`；当前工作树增加录音转写核对。本文保留独立存储接口和 A2 历史验收依据；正式教学流程、DTO、runtime 和音频语义以 [INT2 学习 API 契约](learning_api_contract.md) 为准。会话、反馈、关联重练、复习排程和操作恢复均使用本仓储。
 
 存储实现位于 `learning/storage/sqlite.py`，身份与记录 router 位于 `web/routes/learning_records.py`，教学 router 位于 `web/routes/learning_tasks.py`。正式 APIServer 使用 Settings 配置并关闭通用 records 创建/更新，防止绕过教学校验；下面的独立挂载示例保留原 A2 兼容行为。原 A2 范围与验收结果记录在本文末尾。
 
@@ -43,7 +43,7 @@ Record：
 {"record_id":"UUID","kind":"session","session_id":"business-session-id","data":{},"revision":1,"created_at":"UTC ISO8601","updated_at":"UTC ISO8601","audio_assets":[]}
 ```
 
-`record_id` 是独立 UUID，和业务 session_id 分离。kind 支持 session/chat/analysis/attempt/review，以及供服务内部使用的 review_attempt/event。data 是业务完整 JSON 快照，必须为对象，最大 1 MiB；A2 不推断评分、掌握度或反馈可信度。业务快照里的 record_id/audio_asset_id 不被自动解释为数据库外键。列表按创建顺序倒序分页，更新不改变分页顺序。cursor 固定查询过滤条件，不含身份凭证，每次查询仍按当前 owner 过滤。
+`record_id` 是独立 UUID，和业务 session_id 分离。kind 支持 session/chat/analysis/attempt/review，以及供服务内部使用的 review_attempt/event/transcription。data 是业务完整 JSON 快照，必须为对象，最大 1 MiB；A2 不推断评分、掌握度或反馈可信度。业务快照里的 record_id/audio_asset_id 不被自动解释为数据库外键。列表按创建顺序倒序分页，更新不改变分页顺序。cursor 固定查询过滤条件，不含身份凭证，每次查询仍按当前 owner 过滤。
 
 Audio：`{audio_asset_id,record_id,media_type,size_bytes,sha256,created_at,expires_at,state,url}`。available 提供相对 URL；expired 无 URL。默认单个资产最大 16 MiB。只识别 WAV、MP3、Ogg、FLAC、WebM 容器签名，不信任上传文件名和 Content-Type；这不是音频可解码性或语音质量评估。独立上传接口需明确开启 retain_audio，默认保留 7 天。INT2 教学回合通过原子完成接口保存 1 小时临时回放音频；启用保留后，原音按配置保存，默认 7 天。临时和保留音频均可在 API 重启后、到期前恢复。
 
@@ -100,6 +100,18 @@ if claim.acquired:
 
 默认租约 300 秒，过期状态为 interrupted，不自动再次调用提供商。INT2 runtime 在停机或独占实例恢复时调用 `interrupt_operations([owned_operation_ids])` 立即中断自己遗留的 pending；不能在任意新连接创建时全局中断其他活跃工作者。A2 不承诺第三方模型跨进程崩溃的 exactly-once，也不实现 R0 有界后台队列、付费调用重试或任务结束状态机。
 
+## 转写草稿与原音复用
+
+录音核对继续使用 schema v2，内部子记录增加 kind=`transcription`，parent 指向源 session 或 review，不新增表或迁移。草稿记录包含服务端生成的 ID、初始接收时间、期限、机器转写、来源记录/版本、完整业务 context 和原音 SHA256。通用创建、批量写入与操作完成入口拒绝直接创建 transcription；通用更新和删除也拒绝绕过专用草稿流程。正式 HTTP 教学写仍只能经过业务服务。
+
+预览使用 action=`transcribe` 的持久操作，只有 ASR 成功并通过来源、租约、期限校验才原子写入 ready 子记录、私有原音和操作结果。source revision 保持不变。ready 草稿保存 1 小时，API 重启可恢复；pending 识别使用既有 runtime 中断语义，不自动重新调用 ASR。原始操作重读会根据草稿当前状态投影 ready/consumed/expired，避免返回已经消费的旧 ready 结果。
+
+最终操作通过 `begin_operation(..., transcription_consume={transcription_id,context})` 校验 owner、ready 状态、来源/版本、期限和原音有效性，并关联到该子记录。`complete_operation` 在同一事务再次校验，将现有 audio_assets.record_id 转移到正式来源，保留 audio_asset_id、SHA256 和 BLOB，标记 consumed，同时保存正式回合或 attempt 及操作成功结果。不开启保留时沿用临时期限，开启时延长到配置的保留期限。任何失败均回滚消费、音频转移和正式写入，草稿仍可在有效期内用于明确的新最终请求。
+
+同一个最终 request_id 先恢复已有操作；新键不能再次消费同一草稿。不同上下文或变更的源 revision 不能重新绑定。丢弃草稿删除关联操作、子记录及音频；pending 识别按请求 ID 撤销，使迟到工作者失去发布权。已消费草稿不能再丢弃；物理删除后重复撤销返回 404。关闭音频保留在清除字节的同一事务中中断 pending transcribe，后续确认也必须重新通过原音存在校验。源记录或身份删除使用原有级联关系清理草稿和操作。
+
+正式回合与尝试分别保存 `machine_transcript,confirmed_text,transcription_id,confirmed_at`；教练和评价使用确认文字。导出保持既有文本和元数据约定，不包含音频 BLOB。
+
 ## 独立挂载与 INT2 交接
 
 ```python
@@ -118,7 +130,7 @@ mount_learning_api(
 
 不用 APIServer 即可启动此 app；不会加载 ASR 模型或初始化云服务。传入实例由调用方控制路径与音频上限，也可注入 settings-like 对象并延迟建库。没有传 allowed_origins 时沿用原 3000/3010 开发源；同源请求始终允许。Origin 参数不替代 CORS，Vite 使用相对 `/api` 代理无需浏览器跨源访问。业务 router 可复用 `app.state.learning_repository` 和 `learning_identity` 依赖。`learning.api` 仅保留初版候选挂载导入的兼容转发。
 
-INT2 已接入 DTO/Protocol、有界 runtime、正式 API、Settings 和测试数据库隔离，组合 B2 会话、引用原话的反馈与关联重练。`complete_operation` 支持在同一事务中写入记录、返回业务结果和音频，并在响应构建后、提交前再次校验租约。音频占位符为精确单键 `{"audio_key":"user"}`；audio-only 结果可关联现存源记录而不增加 revision。Linux ARM64 缓存运行镜像挂载当前源码的离线联合验证已通过，未进行新镜像构建。复习排程仍待后续实现。旧聊天与发音接口不自动迁移其全局内存历史。
+INT2 已接入 DTO/Protocol、有界 runtime、正式 API、Settings 和测试数据库隔离，组合 B2 会话、引用原话的反馈与关联重练。`complete_operation` 支持在同一事务中写入记录、返回业务结果和音频，并在响应构建后、提交前再次校验租约。音频占位符为精确单键 `{"audio_key":"user"}`；audio-only 结果可关联现存源记录而不增加 revision。Linux ARM64 缓存运行镜像挂载当前源码的离线联合验证已通过，未进行新镜像构建。以上 Linux 检查为 INT2 历史结果；复习排程已在 main `d98b13b` 接入。旧聊天与发音接口不自动迁移其全局内存历史。
 
 ## A2 验证
 

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { learningApi, LearningApiError, parseSession, resetLearningIdentity } from './client'
 import type { LearningApi } from './client'
-import { isReview, isReviewResult } from './validation'
+import { isReview, isReviewResult, isTranscription, sameTranscriptionContext } from './validation'
+import { readTranscriptionReceipts, storeTranscriptionReceipts } from './transcriptionReceipts'
 import type {
   DraftReceipt, LearningAction, LearningBootstrap, LearningConfirmation, LearningOperation, LearningPending, LearningProfile,
-  LearningProgress, LearningReview, LearningSession, LearningSessionSummary, LearningTask,
+  LearningProgress, LearningReview, LearningSession, LearningSessionSummary, LearningTask, ReadyTranscription, TranscriptionReceipt,
 } from './types'
 
 const PENDING_KEY = 'chatterpal.learning.pending.v1'
-const actions: LearningAction[] = ['start', 'turn', 'hint', 'finish', 'feedback', 'attempt', 'example', 'save-review', 'review', 'reveal', 'review-hint', 'defer-review', 'profile', 'delete']
+const actions: LearningAction[] = ['transcribe', 'start', 'turn', 'hint', 'finish', 'feedback', 'attempt', 'example', 'save-review', 'review', 'reveal', 'review-hint', 'defer-review', 'profile', 'delete']
 function readPending(): LearningPending | null {
   try {
     const value = JSON.parse(window.localStorage.getItem(PENDING_KEY) || 'null')
@@ -54,6 +55,17 @@ export function useLearningFlow(api: LearningApi = learningApi) {
   const [notice, setNotice] = useState('')
   const [lastOperation, setLastOperation] = useState<LearningOperation | null>(null)
   const [confirmation, setConfirmation] = useState<LearningConfirmation | null>(null)
+  const [readyTranscriptions, setReadyTranscriptions] = useState<ReadyTranscription[]>([])
+  const transcriptionReceipts = useRef<TranscriptionReceipt[]>(readTranscriptionReceipts())
+  const cancellingTranscription = useRef<string | null>(null)
+  const saveTranscriptionReceipts = useCallback((receipts: TranscriptionReceipt[]) => {
+    transcriptionReceipts.current = receipts
+    storeTranscriptionReceipts(receipts)
+  }, [])
+  const forgetTranscription = useCallback((receipt: DraftReceipt) => {
+    saveTranscriptionReceipts(transcriptionReceipts.current.filter(item => item.draft_key !== receipt.draft_key || item.draft_version > receipt.draft_version))
+    setReadyTranscriptions(previous => previous.filter(item => item.receipt.draft_key !== receipt.draft_key || item.receipt.draft_version > receipt.draft_version))
+  }, [saveTranscriptionReceipts])
   const mounted = useRef(false)
   const generation = useRef(0)
   const selection = useRef(0)
@@ -87,6 +99,13 @@ export function useLearningFlow(api: LearningApi = learningApi) {
       recoveryReview.current = null
       setRecovery('connect')
       setError('学习身份已失效，已暂停查询。请重新连接学习服务；同一身份的未发送内容会保留。')
+      return true
+    }
+    if (['transcription_context_changed', 'transcription_expired', 'transcription_consumed'].includes(failure.code)) {
+      updatePending(null); retry.current = null
+      setError(failure.code === 'transcription_consumed' ? '这段录音已经提交，请刷新记录核对结果。核对文字已保留。'
+        : failure.code === 'transcription_expired' ? '这段录音已过期，请重新录音或放弃录音后使用文字。核对文字已保留。'
+          : '这段录音对应的练习内容已有更新，请重新录音或放弃录音后使用文字。核对文字已保留。')
       return true
     }
     if (failure.status === 409 || conflict(failure.code)) {
@@ -158,12 +177,16 @@ export function useLearningFlow(api: LearningApi = learningApi) {
       if (owner.current && owner.current !== data.learner_id) {
         retry.current = null
         updatePending(null)
+        saveTranscriptionReceipts([]); setReadyTranscriptions([])
         setSession(null); setHistory([]); setCursor(null); setReviews([]); setSelectedReview(null); setProgress(null); setLastOperation(null); setConfirmation(null); setView('today')
         setNotice('已连接新的学习身份，旧身份的记录和未发送内容已清除。')
       }
       if (saved && saved.learner_id !== data.learner_id) { retry.current = null; updatePending(null) }
       owner.current = data.learner_id
       setIdentity(data)
+      const receipts = transcriptionReceipts.current.filter(item => item.learner_id === data.learner_id)
+      saveTranscriptionReceipts(receipts)
+      setReadyTranscriptions(previous => previous.filter(item => item.receipt.learner_id === data.learner_id))
       setRecovery(null)
       recoverySession.current = null
       recoveryReview.current = null
@@ -171,7 +194,7 @@ export function useLearningFlow(api: LearningApi = learningApi) {
       const operation = data.pending_operations.find(item => item.request_id === matching?.request_id) || data.pending_operations[0]
       if (operation) {
         updatePending({ ...matching, request_id: operation.request_id, operation_id: operation.operation_id,
-          action: matching?.request_id === operation.request_id ? matching.action : 'turn',
+          action: matching?.request_id === operation.request_id ? matching.action : operation.action === 'transcribe' ? 'transcribe' : 'turn',
           session_id: operation.session_id || (matching?.request_id === operation.request_id ? matching.session_id : undefined), learner_id: data.learner_id,
           draft_key: matching?.request_id === operation.request_id ? matching.draft_key : undefined,
           draft_version: matching?.request_id === operation.request_id ? matching.draft_version : undefined })
@@ -181,10 +204,25 @@ export function useLearningFlow(api: LearningApi = learningApi) {
       } else updatePending(null)
       pausePolling(false)
       await loadCollections(version, request.signal)
+      const recovered = await Promise.allSettled(receipts.map(async receipt => ({ receipt, transcription: await api.getTranscription(receipt.transcription_id, request.signal) })))
+      if (current(version)) {
+        setReadyTranscriptions(previous => {
+          const next = [...previous]
+          recovered.forEach(result => {
+            if (result.status !== 'fulfilled' || !transcriptionReceipts.current.some(item => item.transcription_id === result.value.receipt.transcription_id)) return
+            const index = next.findIndex(item => item.receipt.draft_key === result.value.receipt.draft_key)
+            if (index < 0) next.push(result.value)
+            else if (next[index].receipt.draft_version <= result.value.receipt.draft_version) next[index] = result.value
+          })
+          return next
+        })
+        const failed = recovered.find(result => result.status === 'rejected')
+        if (failed?.status === 'rejected' && !recoverFailure(failed.reason)) setError(`无法恢复待核对的录音：${message(failed.reason)} 恢复编号已保留，请重新连接后重试。`)
+      }
     } catch (failure) {
       if (current(version)) { setError(message(failure)); setRecovery('connect') }
     } finally { if (current(version)) setLoading(false) }
-  }, [api, loadCollections, pausePolling, setRecovery, updatePending])
+  }, [api, loadCollections, pausePolling, recoverFailure, saveTranscriptionReceipts, setRecovery, updatePending])
 
   useEffect(() => {
     mounted.current = true
@@ -229,7 +267,7 @@ export function useLearningFlow(api: LearningApi = learningApi) {
   const complete = useCallback(async (operation: LearningOperation, operationPending: LearningPending) => {
     const version = generation.current
     const activeOperation = () => current(version) && recoveryRef.current !== 'connect' && pendingRef.current?.request_id === operationPending.request_id
-    if (!activeOperation()) return
+    if (!activeOperation() || cancellingTranscription.current === operationPending.request_id) return
     const sessionId = operation.session_id || operationPending.session_id
     if (operation.status === 'failed' || operation.status === 'interrupted') {
       updatePending(null)
@@ -242,6 +280,26 @@ export function useLearningFlow(api: LearningApi = learningApi) {
     if (operation.status !== 'succeeded') return
     // Keep the mutation lock until the new HTTP revision is available.
     try {
+      if (operationPending.action === 'transcribe') {
+        if (operation.result_type !== 'transcription' || !isTranscription(operation.result)) throw new LearningApiError('录音识别结果不完整，请查询原操作。', 'invalid_response')
+        const sent = retry.current?.pending.request_id === operationPending.request_id ? retry.current.payload : null
+        if (sent instanceof FormData && !sameTranscriptionContext(operation.result.context, JSON.parse(String(sent.get('context'))))) {
+          throw new LearningApiError('返回的录音来源与原请求不一致，请查询原操作。', 'invalid_response')
+        }
+        if (operationPending.draft_key !== undefined && operationPending.draft_version !== undefined) {
+          const receipt: TranscriptionReceipt = { learner_id: operationPending.learner_id, request_id: operationPending.request_id,
+            operation_id: operation.operation_id, transcription_id: operation.result.transcription_id,
+            draft_key: operationPending.draft_key, draft_version: operationPending.draft_version }
+          const transcription = operation.result
+          saveTranscriptionReceipts([...transcriptionReceipts.current.filter(item => item.draft_key !== receipt.draft_key), receipt])
+          setReadyTranscriptions(previous => [...previous.filter(item => item.receipt.draft_key !== receipt.draft_key), { receipt, transcription }])
+        }
+        setLastOperation(operation)
+        setError(''); setRecovery(null); setNotice('录音已识别，请核对文字后再提交。')
+        retry.current = null
+        updatePending(null)
+        return
+      }
       let updated: LearningSession | null = null
       const reviewOperation = ['review_saved', 'review_reveal', 'review_hint', 'review_deferred', 'review'].includes(operation.result_type || '')
       const reviewResult = operation.result_type === 'review' && isReviewResult(operation.result) ? operation.result.review
@@ -273,6 +331,9 @@ export function useLearningFlow(api: LearningApi = learningApi) {
       }
       setLastOperation({ ...operation, session_id: sessionId })
       setConfirmation({ ...operationPending, session_id: sessionId })
+      if (['turn', 'attempt', 'review'].includes(operationPending.action) && operationPending.draft_key !== undefined && operationPending.draft_version !== undefined) {
+        forgetTranscription({ draft_key: operationPending.draft_key, draft_version: operationPending.draft_version })
+      }
       setError(''); setRecovery(null)
       setNotice('已保存本次结果。')
       retry.current = null
@@ -281,7 +342,7 @@ export function useLearningFlow(api: LearningApi = learningApi) {
     } catch (failure) {
       if (current(version) && pendingRef.current?.request_id === operationPending.request_id && !recoverFailure(failure, sessionId, true, operationPending.review_item_id)) setError(`操作已经完成，读取结果暂时失败：${message(failure)} 请查询原操作，无需重新提交。`)
     }
-  }, [api, loadCollections, recoverFailure, setRecovery, updatePending])
+  }, [api, forgetTranscription, loadCollections, recoverFailure, saveTranscriptionReceipts, setRecovery, updatePending])
 
   const send = useCallback(async (entry: RetryPayload) => {
     const version = generation.current
@@ -306,11 +367,53 @@ export function useLearningFlow(api: LearningApi = learningApi) {
   }, [api, complete, pausePolling, recoverFailure, setRecovery, updatePending])
 
   const mutate = useCallback(async (action: LearningAction, path: string, payload: Record<string, unknown> | FormData, sessionId?: string, receipt?: DraftReceipt) => {
-    if (deleting.current || !owner.current || pendingRef.current || paused.current) return
+    if (deleting.current || !owner.current || pendingRef.current || paused.current || cancellingTranscription.current) return
     setLastOperation(null)
-    const reviewId = path.match(/^\/reviews\/([^/]+)\//)?.[1]
+    const reviewId = path.match(/^\/reviews\/([^/]+)\//)?.[1] || (action === 'transcribe' && payload instanceof FormData ? (() => {
+      try { const context = JSON.parse(String(payload.get('context'))); return context.kind === 'review' ? encodeURIComponent(context.review_item_id) : undefined } catch { return undefined }
+    })() : undefined)
     await send({ path, payload, pending: { action, request_id: requestId(), session_id: sessionId, review_item_id: reviewId ? decodeURIComponent(reviewId) : undefined, learner_id: owner.current, ...receipt } })
   }, [send])
+
+  const cancelTranscription = useCallback(async (receipt: DraftReceipt, transcriptionId?: string) => {
+    if (deleting.current || !owner.current) throw new LearningApiError('请先连接学习身份，再放弃录音。', 'identity_required')
+    const waiting = pendingRef.current
+    if (waiting && (waiting.action !== 'transcribe' || waiting.draft_key !== receipt.draft_key || waiting.draft_version !== receipt.draft_version)) {
+      throw new LearningApiError('请等待当前提交确认后再更换录音。', 'operation_pending')
+    }
+    const saved = transcriptionReceipts.current.find(item => item.draft_key === receipt.draft_key && item.draft_version === receipt.draft_version)
+    const id = transcriptionId || saved?.transcription_id
+    if (!waiting && !id) { forgetTranscription(receipt); return }
+    const version = generation.current
+    const request = waiting?.request_id || saved?.request_id || id!
+    if (cancellingTranscription.current) throw new LearningApiError('正在放弃录音，请稍候。', 'operation_pending')
+    cancellingTranscription.current = request
+    const wasPaused = paused.current
+    pausePolling(true)
+    try {
+      try {
+        if (waiting) await api.deleteTranscriptionRequest(waiting.request_id)
+        else await api.deleteTranscription(id!)
+      } catch (failure) {
+        if (!waiting || !(failure instanceof LearningApiError) || failure.status !== 404) throw failure
+        // Keep the receipt until the original POST is visible and a DELETE succeeds.
+        const existing = await api.requestStatus(waiting.request_id)
+        if (!current(version)) throw new LearningApiError('学习身份已更新，请重新打开练习。', 'identity_changed')
+        if (existing.request_id !== waiting.request_id) throw new LearningApiError('无法核对原识别请求，请稍后重试放弃录音。', 'invalid_response')
+        await api.deleteTranscriptionRequest(waiting.request_id)
+      }
+      if (!current(version)) throw new LearningApiError('学习身份已更新，请重新打开练习。', 'identity_changed')
+      if (waiting && pendingRef.current?.request_id === waiting.request_id) { updatePending(null); retry.current = null; setError(''); setRecovery(null) }
+      forgetTranscription(receipt)
+      setNotice('已放弃本次录音。')
+    } catch (failure) {
+      if (current(version)) setError(`无法放弃本次录音：${message(failure)} 录音与恢复编号已保留。`)
+      throw failure
+    } finally {
+      cancellingTranscription.current = null
+      if (current(version)) pausePolling(wasPaused)
+    }
+  }, [api, forgetTranscription, pausePolling, setRecovery, updatePending])
 
   const poll = useCallback(async (signal?: AbortSignal) => {
     const waiting = pendingRef.current
@@ -397,6 +500,7 @@ export function useLearningFlow(api: LearningApi = learningApi) {
       await api.deleteData(requestId())
       if (!mounted.current) return
       updatePending(null)
+      saveTranscriptionReceipts([]); setReadyTranscriptions([])
       retry.current = null
       owner.current = null
       recoverySession.current = null
@@ -418,6 +522,6 @@ export function useLearningFlow(api: LearningApi = learningApi) {
   }
 
   return { identity, tasks, history, cursor, session, reviews, reviewUnavailable, progress, view, setView, loading, pending, error, warnings, notice,
-    selectedReview, setSelectedReview, openReview, lastOperation, confirmation, recovery, pollingPaused, connect, openSession, mutate, retryPending, saveProfile, loadMore, deleteData, acknowledgeRecovery,
+    selectedReview, setSelectedReview, openReview, lastOperation, confirmation, readyTranscriptions, cancelTranscription, forgetTranscription, recovery, pollingPaused, connect, openSession, mutate, retryPending, saveProfile, loadMore, deleteData, acknowledgeRecovery,
     exportData: api.exportData, canReplay: Boolean(retry.current) }
 }

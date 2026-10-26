@@ -38,7 +38,11 @@ async function installFixture(page, state) {
       else {
         state.requestIds.push(key);
         let resultType = 'session'; let result;
-        if (pathname === '/api/learning/sessions') state.session = initialSession();
+        if (pathname === '/api/learning/transcriptions') {
+          resultType = 'transcription';
+          result = { transcription_id: `transcription-${state.requestIds.length}`, status: 'ready', context: JSON.parse(payload.context), machine_transcript: 'I went hiking yesterday.',
+            audio: { state: 'not_saved', url: null, audio_asset_id: null, expires_at: null }, received_at: new Date().toISOString(), expires_at: new Date(Date.now() + 3600000).toISOString() };
+        } else if (pathname === '/api/learning/sessions') state.session = initialSession();
         else if (pathname.endsWith('/turns')) {
           if (Number(payload.expected_revision) !== state.session.revision) throw new Error('Turn must use current HTTP revision');
           state.session.revision++;
@@ -57,7 +61,7 @@ async function installFixture(page, state) {
           const parent = state.session.attempts.filter(item => item.source_turn_id === payload.source_turn_id && item.focus_id === focusId && item.mode === payload.mode).at(-1);
           if ((payload.parent_attempt_id || null) !== (parent?.attempt_id || null)) throw new Error('Parent attempt must use the same source, focus and mode');
           const attempt = { attempt_id: `attempt-${state.session.attempts.length + 1}`, session_id: 'session-1', source_turn_id: payload.source_turn_id, focus_id: focusId, parent_attempt_id: payload.parent_attempt_id || null,
-            mode: payload.mode, transcript: payload.text || 'I went hiking yesterday.', feedback: null,
+            mode: payload.mode, transcript: payload.confirmed_text || payload.text || 'I went hiking yesterday.', feedback: null,
             evaluation: { status: 'available', result: 'met', source: 'text', reason: '这次使用了过去时。' }, audio: { state: 'not_saved' }, created_at: '2026-10-23T08:00:00Z' };
           state.session.attempts.push(attempt); state.session.revision++; resultType = 'attempt'; result = attempt;
         } else throw new Error(`Unexpected mutation ${pathname}`);

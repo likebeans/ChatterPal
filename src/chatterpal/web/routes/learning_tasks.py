@@ -58,8 +58,19 @@ async def _submission(request: Request, model, max_audio_bytes: int):
         raise StoreError(
             "invalid_input", "提交内容不完整，请检查文字、目标句和练习版本。", 422
         ) from error
-    if (body.text is None) == (audio is None):
-        raise StoreError("input_required", "请选择文字或录音其中一种方式回答。", 422)
+    if (
+        sum(
+            (
+                body.text is not None,
+                audio is not None,
+                body.transcription_id is not None,
+            )
+        )
+        != 1
+    ):
+        raise StoreError(
+            "input_required", "请选择文字、录音或已核对的转写其中一种方式回答。", 422
+        )
     if audio is not None:
         if not audio:
             raise StoreError("empty_audio", "录音为空，请重新录音。", 422)

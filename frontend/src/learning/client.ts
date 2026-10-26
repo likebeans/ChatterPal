@@ -1,8 +1,8 @@
 import axios from 'axios'
-import { isBootstrap, isOperation, isProfile, isProgress, isReview, isSession, isTask } from './validation'
+import { isBootstrap, isOperation, isProfile, isProgress, isReview, isSession, isTask, isTranscription } from './validation'
 import type {
   LearningBootstrap, LearningOperation, LearningProfile, LearningProgress,
-  LearningReview, LearningSession, LearningSessionSummary, LearningTask,
+  LearningReview, LearningSession, LearningSessionSummary, LearningTask, LearningTranscription, TranscriptionContext,
 } from './types'
 
 const ROOT = '/api/learning'
@@ -124,6 +124,13 @@ export const learningApi = {
       throw failure
     }
   },
+  async getTranscription(id: string, signal?: AbortSignal): Promise<LearningTranscription> {
+    const value = requireShape<LearningTranscription>(await request('get', `/transcriptions/${encodeURIComponent(id)}`, undefined, signal), isTranscription)
+    if (value.transcription_id !== id) throw new LearningApiError('返回的录音草稿与原编号不一致。', 'invalid_response')
+    return value
+  },
+  async deleteTranscription(id: string) { return request<void>('delete', `/transcriptions/${encodeURIComponent(id)}`) },
+  async deleteTranscriptionRequest(id: string) { return request<void>('delete', `/transcriptions/requests/${encodeURIComponent(id)}`) },
   async operation(id: string, signal?: AbortSignal) { return parseOperation(await request('get', `/operations/${encodeURIComponent(id)}`, undefined, signal)) },
   async requestStatus(id: string) { return parseOperation(await request('get', `/requests/${encodeURIComponent(id)}`)) },
   async exportData(): Promise<Blob> {
@@ -135,10 +142,9 @@ export const learningApi = {
 
 export type LearningApi = typeof learningApi
 
-export function submissionBody(fields: Record<string, unknown>, audio?: Blob): Record<string, unknown> | FormData {
-  if (!audio) return fields
+export function transcriptionBody(context: TranscriptionContext, audio: Blob) {
   const form = new FormData()
-  Object.entries(fields).forEach(([key, value]) => { if (value !== null && value !== undefined) form.append(key, String(value)) })
+  form.append('context', JSON.stringify(context))
   form.append('audio', audio, 'recording.wav')
   return form
 }

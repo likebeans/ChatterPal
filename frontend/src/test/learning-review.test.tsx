@@ -4,7 +4,7 @@ import LearningWorkspace from '../learning/LearningWorkspace'
 import { LearningApiError, parseOperation } from '../learning/client'
 import { useLearningFlow } from '../learning/useLearningFlow'
 import type { LearningReview, ReviewResult } from '../learning/types'
-import { learningFeedback, learningSession, mockLearningApi, operation } from './learning-fixtures'
+import { learningFeedback, learningSession, mockLearningApi, operation, transcriptionOperation } from './learning-fixtures'
 import { deferred, emitAudio, tone } from './setup'
 
 const review: LearningReview = { review_item_id: 'review-1', session_id: 'session-1', focus_id: 'past-tense', prompt: 'Tell another friend about a quiet weekend.', question_id: 'quiet-weekend', prompt_available: true, due_at: '2026-10-26T08:00:00Z', revision: 1, cycle: 0, used_hint: false, revealed_answer: false, independent_variant_available: true, availability_reason: '' }
@@ -81,12 +81,16 @@ it('submits recorded audio with a review revision and makes defer an explicit se
   act(() => emitAudio([tone()]))
   fireEvent.click(screen.getByRole('button', { name: '停止录音' }))
   await screen.findByRole('button', { name: '试听本次录音' })
-  fireEvent.click(screen.getByRole('button', { name: '提交复习回答' }))
-  await waitFor(() => expect(api.mutate).toHaveBeenCalledOnce())
+  vi.mocked(api.mutate).mockImplementationOnce(async (_path, _payload, requestId) => transcriptionOperation({ kind: 'review', review_item_id: review.review_item_id, expected_revision: review.revision }, requestId))
+  fireEvent.click(screen.getByRole('button', { name: '识别并核对录音' }))
+  await screen.findByRole('textbox', { name: '核对录音文字' })
   const payload = vi.mocked(api.mutate).mock.calls[0][1] as FormData
-  expect(payload.get('expected_revision')).toBe('1')
+  expect(JSON.parse(String(payload.get('context')))).toEqual({ kind: 'review', review_item_id: 'review-1', expected_revision: 1 })
   expect((payload.get('audio') as File).type).toBe('audio/wav')
   expect(payload.has('text')).toBe(false)
+  fireEvent.click(screen.getByRole('button', { name: '确认文字并提交' }))
+  await waitFor(() => expect(api.mutate).toHaveBeenCalledTimes(2))
+  expect(vi.mocked(api.mutate).mock.calls[1][1]).toEqual({ expected_revision: 1, transcription_id: 'transcription-1', confirmed_text: 'I go hiking yesterday.' })
   await waitFor(() => expect(screen.getByRole('button', { name: '明天再复习' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: '明天再复习' }))
   await waitFor(() => expect(api.mutate).toHaveBeenLastCalledWith('/reviews/review-1/defer', { expected_revision: 2, days: 1 }, expect.any(String)))
