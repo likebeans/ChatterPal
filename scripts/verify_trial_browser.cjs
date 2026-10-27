@@ -53,6 +53,7 @@ const speech = 'Last weekend, I went hiking with two friends. I felt relaxed bec
     injected_clock: false, timings: [], errors: [], checks: { verified_tls_chain_and_hostname: true }, screenshots: [] };
   let context;
   let page;
+  let staleTab;
   async function persist() {
     await fs.writeFile(path.join(output, 'results.json'), JSON.stringify(result, null, 2), { mode: 0o600 });
   }
@@ -87,10 +88,11 @@ const speech = 'Last weekend, I went hiking with two friends. I felt relaxed bec
     const waitIdle = () => page.locator('.learning-pending').waitFor({ state: 'detached', timeout: 150000 });
     async function submit(label, suffix, tag) {
       const started = Date.now();
-      const pending = page.waitForResponse(response => response.request().method() === 'POST'
-        && new URL(response.url()).pathname.endsWith(suffix));
-      await page.getByRole('button', { name: label, exact: true }).click();
-      const response = await pending;
+      const [response] = await Promise.all([
+        page.waitForResponse(response => response.request().method() === 'POST'
+          && new URL(response.url()).pathname.endsWith(suffix)),
+        page.getByRole('button', { name: label, exact: true }).click(),
+      ]);
       assert.equal(response.status(), 202, tag);
       let operation = await response.json();
       const deadline = Date.now() + 150000;
@@ -146,6 +148,13 @@ const speech = 'Last weekend, I went hiking with two friends. I felt relaxed bec
     assert.equal(await page.getByRole('textbox', { name: '核对录音文字', exact: true }).inputValue(), preview.machine_transcript);
     result.checks.ready_draft_after_api_restart = true;
     await page.getByRole('textbox', { name: '核对录音文字', exact: true }).fill(speech);
+    staleTab = await context.newPage();
+    staleTab.setDefaultTimeout(45000);
+    staleTab.on('pageerror', error => result.errors.push(error.message));
+    await staleTab.goto(origin, { waitUntil: 'networkidle' });
+    await staleTab.getByRole('button', { name: '继续核对任务录音', exact: true }).click();
+    const localCorrection = 'I want to keep this local correction after the other tab saves the recording.';
+    await staleTab.getByRole('textbox', { name: '核对录音文字', exact: true }).fill(localCorrection);
     const confirmed = await submit('确认文字并提交', '/turns', 'confirm-live-reply');
     const user = confirmed.turns.find(turn => turn.role === 'user');
     assert.equal(user.text, speech);
@@ -156,10 +165,41 @@ const speech = 'Last weekend, I went hiking with two friends. I felt relaxed bec
     await play('播放教练回复');
     result.checks.live_llm_tts_and_playback = true;
     result.checks.confirmed_text_and_original_audio = true;
+    const [protectedRecording] = await Promise.all([
+      staleTab.waitForResponse(response => response.request().method() === 'DELETE'
+        && new URL(response.url()).pathname.endsWith(`/transcriptions/${preview.transcription_id}`)),
+      staleTab.getByRole('button', { name: '放弃本次录音', exact: true }).click(),
+    ]);
+    assert.equal(protectedRecording.status(), 409, 'Saved recording must remain protected');
+    await staleTab.getByRole('textbox', { name: '核对录音文字', exact: true }).waitFor({ state: 'detached' });
+    assert.equal(await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).inputValue(), localCorrection);
+    assert.equal(await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).isEnabled(), true);
+    await staleTab.getByRole('button', { name: '刷新本次记录', exact: true }).click();
+    await staleTab.getByText(speech, { exact: true }).first().waitFor();
+    await staleTab.getByRole('button', { name: '开始录音', exact: true }).click();
+    await staleTab.getByRole('button', { name: '停止录音', exact: true }).waitFor();
+    await delay(650);
+    await staleTab.getByRole('button', { name: '停止录音', exact: true }).click();
+    await staleTab.getByRole('button', { name: '放弃本次录音', exact: true }).click();
+    await staleTab.getByRole('button', { name: '开始录音', exact: true }).waitFor();
+    assert.equal(await staleTab.getByRole('textbox', { name: '我的任务回答', exact: true }).inputValue(), localCorrection);
+    await staleTab.screenshot({ path: path.join(output, 'trial-consumed-recording-recovered.png'), fullPage: true });
+    result.screenshots.push('trial-consumed-recording-recovered.png');
+    result.checks.consumed_recording_cross_tab_recovery = true;
+    result.checks.local_correction_and_rerecording_preserved = true;
+    await staleTab.close();
     await page.setViewportSize({ width: 375, height: 812 });
+    await page.evaluate(async () => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+      window.scrollTo(0, 0);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.equal(await page.locator('.app-header').count(), 1);
     await page.screenshot({ path: path.join(output, 'trial-mobile-recording.png'), fullPage: true });
-    result.screenshots.push('trial-mobile-recording.png');
+    await page.locator('.learning-composer').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(output, 'trial-mobile-composer-viewport.png') });
+    result.screenshots.push('trial-mobile-recording.png', 'trial-mobile-composer-viewport.png');
     result.checks.mobile_viewport = true;
     await page.setViewportSize({ width: 1280, height: 900 });
     let completed = await submit('结束对话，查看反馈', '/finish', 'finish-feedback');

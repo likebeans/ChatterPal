@@ -170,7 +170,10 @@ class TrialEnvironmentTests(unittest.TestCase):
         dirty.write_text("raise RuntimeError('uncommitted source must not run')\n")
         self.environment.repository = shadow
         manifest = self.prepare()
-        source = self.environment.root / "release/a253d92/src/chatterpal/cli/run.py"
+        source = (
+            self.environment.root
+            / f"release/{trial.RELEASE_ID}/src/chatterpal/cli/run.py"
+        )
         committed = subprocess.run(
             [
                 "/usr/bin/git",
@@ -183,9 +186,7 @@ class TrialEnvironmentTests(unittest.TestCase):
             capture_output=True,
         ).stdout
         self.assertEqual(source.read_bytes(), committed)
-        self.assertEqual(
-            manifest["version"]["commit"], "a253d924e7ad92b4585afe1f4d334527b8a61722"
-        )
+        self.assertEqual(manifest["version"]["commit"], trial.BASE_COMMIT)
         self.assertEqual(manifest["version"]["package_version"], "0.1.0")
         self.assertEqual(
             manifest["version"]["source_files"]["src/chatterpal/cli/run.py"],
@@ -252,7 +253,9 @@ class TrialEnvironmentTests(unittest.TestCase):
 
     def test_prepared_assets_are_verified_before_any_start(self):
         self.prepare()
-        asset = self.environment.root / "release/a253d92/frontend/assets/app.js"
+        asset = (
+            self.environment.root / f"release/{trial.RELEASE_ID}/frontend/assets/app.js"
+        )
         asset.write_text("changed after prepare")
         with self.assertRaisesRegex(trial.TrialError, "files changed"):
             self.environment.start()
@@ -329,7 +332,9 @@ class TrialEnvironmentTests(unittest.TestCase):
         self.assertTrue(api["RunAtLoad"])
         self.assertEqual(api["Umask"], 0o077)
         env = api["EnvironmentVariables"]
-        self.assertEqual(env["PYTHONPATH"], str(root / "release/a253d92/src"))
+        self.assertEqual(
+            env["PYTHONPATH"], str(root / f"release/{trial.RELEASE_ID}/src")
+        )
         self.assertEqual(env["LEARNING_DB_PATH"], str(root / "data/learning.sqlite3"))
         self.assertEqual(env["LEARNING_COOKIE_SECURE"], "true")
         self.assertEqual(env["XDG_CACHE_HOME"], str(Path.home() / ".cache"))
@@ -572,6 +577,204 @@ class TrialEnvironmentTests(unittest.TestCase):
         self.assertEqual(
             result["urls"]["health"], "https://chatterpal.local:8443/api/health"
         )
+
+    def prepare_previous_release(self):
+        previous = "a253d924e7ad92b4585afe1f4d334527b8a61722"
+        with (
+            mock.patch.object(trial, "BASE_COMMIT", previous),
+            mock.patch.object(trial, "RELEASE_ID", previous[:7]),
+        ):
+            manifest = self.prepare()
+        database = self.environment.root / "data/learning.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE trial_notes (text TEXT)")
+            connection.execute(
+                "INSERT INTO trial_notes VALUES ('keep learner identity')"
+            )
+        self.certificate = self.environment.root / "public/root.crt"
+        trial._write_private(self.certificate, b"synthetic unchanged CA")
+        return manifest
+
+    def test_upgrade_and_rollback_keep_database_certificate_and_previous_release(self):
+        previous = self.prepare_previous_release()
+        before = self.environment.manifest_path.read_bytes()
+        database = self.environment.root / "data/learning.sqlite3"
+        original_data = database.read_bytes()
+        (self.frontend / "assets/app.js").write_text("window.accepted = true;")
+        original_open = Path.open
+
+        def guarded(path, *args, **kwargs):
+            if path == self.provider_file:
+                raise AssertionError("upgrade opened provider configuration")
+            return original_open(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", guarded):
+            result = self.environment.upgrade(frontend_dist=self.frontend)
+        self.assertTrue(result["upgraded"])
+        current = self.environment._manifest(verify=True)
+        self.assertEqual(current["version"]["commit"], trial.BASE_COMMIT)
+        self.assertEqual(
+            self.environment.paths()["release"],
+            str(self.environment.root / "release" / trial.RELEASE_ID),
+        )
+        self.assertEqual(database.read_bytes(), original_data)
+        self.assertEqual(self.certificate.read_bytes(), b"synthetic unchanged CA")
+        self.assertTrue((self.environment.root / "release/a253d92").is_dir())
+        with sqlite3.connect(result["backup"]["backup"]) as connection:
+            self.assertEqual(
+                connection.execute("SELECT text FROM trial_notes").fetchone(),
+                ("keep learner identity",),
+            )
+        api = plistlib.loads(
+            (
+                self.environment.root / f"launchagents/{trial.LABELS['api']}.plist"
+            ).read_bytes()
+        )
+        self.assertIn(trial.RELEASE_ID, api["EnvironmentVariables"]["PYTHONPATH"])
+        self.assertIn(
+            f"release/{trial.RELEASE_ID}/frontend",
+            (self.environment.root / "Caddyfile").read_text(),
+        )
+        self.assertEqual(
+            self.environment.upgrade(frontend_dist=self.frontend)["upgraded"], False
+        )
+        # A rollback must preserve records added after the upgrade, not restore its backup.
+        with sqlite3.connect(database) as connection:
+            connection.execute("INSERT INTO trial_notes VALUES ('new record')")
+        restored = self.environment.rollback(snapshot=result["rollback_snapshot"])
+        self.assertEqual(restored["version"], previous["version"]["commit"])
+        self.assertEqual(self.environment.manifest_path.read_bytes(), before)
+        self.environment._manifest(verify=True)
+        self.assertIn("a253d92", self.environment.paths()["release"])
+        with sqlite3.connect(database) as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM trial_notes").fetchone(), (2,)
+            )
+        self.assertEqual(self.certificate.read_bytes(), b"synthetic unchanged CA")
+        for path in (self.environment.root / "upgrades").rglob("*"):
+            self.assertEqual(
+                stat.S_IMODE(path.stat().st_mode), 0o700 if path.is_dir() else 0o600
+            )
+        self.patch_start_boundaries()
+        self.assertTrue(self.environment.start()["ready"])
+
+    def test_upgrade_rejects_loaded_or_foreign_agents_before_changing_state(self):
+        self.prepare_previous_release()
+        before = self.environment.manifest_path.read_bytes()
+        for root, message in (
+            (None, "Stop the trial"),
+            (self.directory / "other", "different state"),
+        ):
+            with self.subTest(root=root):
+                self.launchctl.load("api", other_root=root)
+                with self.assertRaisesRegex(trial.TrialError, message):
+                    self.environment.upgrade(frontend_dist=self.frontend)
+                self.assertEqual(self.environment.manifest_path.read_bytes(), before)
+                self.assertFalse(
+                    (self.environment.root / "release" / trial.RELEASE_ID).exists()
+                )
+                self.launchctl.loaded.clear()
+
+    def test_upgrade_rejects_provider_containment_before_reading_frontend(self):
+        self.prepare_previous_release()
+        with mock.patch.object(
+            trial, "_frontend_hashes", side_effect=AssertionError("read private input")
+        ):
+            with self.assertRaisesRegex(trial.TrialError, "outside the frontend"):
+                self.environment.upgrade(frontend_dist=self.directory)
+
+    def test_failed_upgrade_restores_all_active_files_and_can_retry(self):
+        self.prepare_previous_release()
+        original = self.environment._manifest()
+        before = {
+            relative: (self.environment.root / relative).read_bytes()
+            for relative in (*original["managed_files"], "manifest.json")
+        }
+        real_replace = trial.os.replace
+        failed = False
+
+        def replace(source, destination):
+            nonlocal failed
+            if Path(destination) == self.environment.manifest_path and not failed:
+                failed = True
+                raise OSError("simulated interrupted manifest switch")
+            return real_replace(source, destination)
+
+        with mock.patch.object(trial.os, "replace", side_effect=replace):
+            with self.assertRaisesRegex(OSError, "interrupted"):
+                self.environment.upgrade(frontend_dist=self.frontend)
+        self.assertTrue(failed)
+        for relative, content in before.items():
+            self.assertEqual((self.environment.root / relative).read_bytes(), content)
+        self.assertFalse(
+            (self.environment.root / "release" / trial.RELEASE_ID).exists()
+        )
+        self.environment._manifest(verify=True)
+        self.assertTrue(
+            self.environment.upgrade(frontend_dist=self.frontend)["upgraded"]
+        )
+
+    def test_partial_switch_write_cleans_up_and_allows_upgrade_retry(self):
+        self.prepare_previous_release()
+        original = self.environment._manifest()
+        before = {
+            relative: (self.environment.root / relative).read_bytes()
+            for relative in (*original["managed_files"], "manifest.json")
+        }
+        write = trial._write_private
+        failed = False
+
+        def partial_write(path, content):
+            nonlocal failed
+            if (
+                path.parent.name.startswith(".switch-")
+                and path.name == "api_launcher.py"
+                and not failed
+            ):
+                failed = True
+                write(path, content[:8])
+                raise OSError("simulated disk exhaustion")
+            write(path, content)
+
+        # An abandoned temporary directory from an uncatchable termination must
+        # not collide with a later switch or recovery.
+        abandoned = self.environment.root / ".switch-abandoned"
+        abandoned.mkdir(mode=0o700)
+        (abandoned / "Caddyfile").write_text("partial")
+        with mock.patch.object(trial, "_write_private", side_effect=partial_write):
+            with self.assertRaisesRegex(OSError, "disk exhaustion"):
+                self.environment.upgrade(frontend_dist=self.frontend)
+        self.assertTrue(failed)
+        for relative, content in before.items():
+            self.assertEqual((self.environment.root / relative).read_bytes(), content)
+        self.assertEqual(list(self.environment.root.glob(".switch-*")), [abandoned])
+        self.environment._manifest(verify=True)
+        result = self.environment.upgrade(frontend_dist=self.frontend)
+        self.assertTrue(result["upgraded"])
+        self.environment.rollback(snapshot=result["rollback_snapshot"])
+        self.environment._manifest(verify=True)
+
+    def test_upgrade_refuses_application_or_schema_change_and_tampered_files(self):
+        self.prepare_previous_release()
+        before = self.environment.manifest_path.read_bytes()
+        freeze = trial._freeze_source
+
+        def changed(*args):
+            version = freeze(*args)
+            version["source_files"]["src/chatterpal/cli/run.py"] = "changed"
+            return version
+
+        with mock.patch.object(trial, "_freeze_source", side_effect=changed):
+            with self.assertRaisesRegex(trial.TrialError, "migration review"):
+                self.environment.upgrade(frontend_dist=self.frontend)
+        self.assertEqual(self.environment.manifest_path.read_bytes(), before)
+        self.assertFalse(
+            (self.environment.root / "release" / trial.RELEASE_ID).exists()
+        )
+        asset = self.environment.root / "release/a253d92/frontend/assets/app.js"
+        asset.write_text("tampered")
+        with self.assertRaisesRegex(trial.TrialError, "files changed"):
+            self.environment.upgrade(frontend_dist=self.frontend)
 
     def test_port_conflict_fails_before_bootstrap(self):
         self.prepare()

@@ -37,8 +37,12 @@ from pathlib import Path, PurePosixPath
 from typing import Iterator, Sequence
 from urllib.parse import quote
 
-BASE_COMMIT = "a253d924e7ad92b4585afe1f4d334527b8a61722"
+BASE_COMMIT = "173f9f3fe17555f63c14fa6cb18705516b2db49e"
 RELEASE_ID = BASE_COMMIT[:7]
+SUPPORTED_COMMITS = {
+    "a253d924e7ad92b4585afe1f4d334527b8a61722",
+    BASE_COMMIT,
+}
 DEFAULT_STATE_DIR = Path.home() / "Library/Application Support/ChatterPal/trial"
 LABELS = {
     "api": "local.chatterpal.trial.api",
@@ -344,10 +348,15 @@ class TrialEnvironment:
         return self.root / "manifest.json"
 
     def paths(self) -> dict[str, str]:
+        release_id = (
+            self._manifest()["version"]["release"]
+            if self.manifest_path.exists()
+            else RELEASE_ID
+        )
         return {
             "state": str(self.root),
-            "release": str(self.root / "release" / RELEASE_ID),
-            "frontend": str(self.root / "release" / RELEASE_ID / "frontend"),
+            "release": str(self.root / "release" / release_id),
+            "frontend": str(self.root / "release" / release_id / "frontend"),
             "runtime": str(self.root / "runtime"),
             "database": str(self.root / "data/learning.sqlite3"),
             "backups": str(self.root / "backups"),
@@ -419,49 +428,65 @@ class TrialEnvironment:
         if any(job["loaded"] and not job["owned"] for job in jobs.values()):
             raise TrialError("A trial label belongs to a different state directory.")
 
-    def _manifest(self, *, verify: bool = False) -> dict:
-        if self.manifest_path.is_symlink() or not self.manifest_path.is_file():
+    def _manifest(self, *, verify: bool = False, snapshot: Path | None = None) -> dict:
+        managed_root = snapshot or self.root
+        path = managed_root / "manifest.json"
+        if path.is_symlink() or not path.is_file():
             raise TrialError("Run prepare before using this trial environment.")
         try:
-            manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            version = manifest["version"]
+            managed_names = {
+                "api_launcher.py",
+                "Caddyfile",
+                *(f"launchagents/{label}.plist" for label in LABELS.values()),
+            }
             if (
                 manifest["schema_version"] != SCHEMA_VERSION
-                or manifest["version"]["commit"] != BASE_COMMIT
+                or version["commit"] not in SUPPORTED_COMMITS
+                or version["release"] != version["commit"][:7]
                 or manifest["config"]["state_dir"] != str(self.root)
+                or set(manifest["managed_files"]) != managed_names
             ):
                 raise TrialError("This state contains a different trial release.")
             if verify:
-                release = self.root / "release" / RELEASE_ID
+                release = self.root / "release" / version["release"]
+                if release.is_symlink() or not release.is_dir():
+                    raise TrialError(
+                        "The prepared release directory is missing or unsafe."
+                    )
                 source = {
                     key: value
                     for key, value in _tree_hashes(release).items()
                     if not key.startswith("frontend/")
                 }
                 if (
-                    source != manifest["version"]["source_files"]
-                    or _tree_hashes(release / "frontend")
-                    != manifest["version"]["frontend_files"]
+                    source != version["source_files"]
+                    or _tree_hashes(release / "frontend") != version["frontend_files"]
                     or any(
-                        (self.root / relative).is_symlink()
-                        or _digest(self.root / relative) != digest
+                        (managed_root / relative).is_symlink()
+                        or _digest(managed_root / relative) != digest
                         for relative, digest in manifest["managed_files"].items()
                     )
                 ):
                     raise TrialError(
-                        "Prepared release files changed; use a new state directory."
+                        "Prepared release files changed; restore the frozen files."
                     )
             return manifest
         except (KeyError, ValueError, TypeError):
             raise TrialError("The trial manifest is invalid.") from None
 
-    def _environment(self, config: dict) -> dict[str, str]:
+    def _environment(
+        self, config: dict, release_id: str | None = None
+    ) -> dict[str, str]:
+        release_id = release_id or RELEASE_ID
         return {
             "HOME": str(Path.home()),
             "PATH": (
                 f"{Path(config['python']).parent}:/usr/bin:/bin:/usr/sbin:/sbin:"
                 "/opt/homebrew/bin:/usr/local/bin"
             ),
-            "PYTHONPATH": str(self.root / "release" / RELEASE_ID / "src"),
+            "PYTHONPATH": str(self.root / "release" / release_id / "src"),
             "PYTHONHOME": "",
             "PYTHONNOUSERSITE": "1",
             "PYTHONSAFEPATH": "1",
@@ -615,7 +640,8 @@ http://:{CA_PORT} {{
             if self.manifest_path.exists():
                 existing = self._manifest(verify=True)
                 if (
-                    existing["config"] != config
+                    existing["version"]["commit"] != BASE_COMMIT
+                    or existing["config"] != config
                     or existing["version"]["frontend_files"] != frontend_files
                     or existing["version"]["python"]["sha256"] != _digest(python_path)
                     or existing["version"]["caddy"]["sha256"] != _digest(caddy_path)
@@ -707,6 +733,172 @@ http://:{CA_PORT} {{
                             destination.unlink(missing_ok=True)
                     raise
                 return manifest
+
+    def _require_stopped(self) -> None:
+        jobs = self._jobs()
+        self._check_ownership(jobs)
+        if any(job["loaded"] for job in jobs.values()):
+            raise TrialError("Stop the trial service before switching releases.")
+
+    def _activate_snapshot(self, snapshot: Path) -> None:
+        manifest = self._manifest(verify=True, snapshot=snapshot)
+        replacements = {
+            relative: (snapshot / relative).read_bytes()
+            for relative in (*manifest["managed_files"], "manifest.json")
+        }
+        original = {
+            relative: (self.root / relative).read_bytes() for relative in replacements
+        }
+
+        def install(files: dict[str, bytes]) -> None:
+            for relative, content in files.items():
+                destination = self.root / relative
+                with tempfile.TemporaryDirectory(
+                    prefix=".switch-", dir=destination.parent
+                ) as temp:
+                    temporary = Path(temp) / destination.name
+                    _write_private(temporary, content)
+                    os.replace(temporary, destination)
+
+        try:
+            install(replacements)
+        except BaseException:
+            install(original)
+            raise
+
+    def upgrade(self, *, frontend_dist: str | Path) -> dict:
+        frontend = _absolute(frontend_dist).resolve()
+        with self._lock():
+            existing = self._manifest(verify=True)
+            config = {**existing["config"], "frontend_dist": str(frontend)}
+            if (
+                self.root == frontend
+                or self.root.is_relative_to(frontend)
+                or Path(config["env_file"]).resolve().is_relative_to(frontend)
+            ):
+                raise TrialError(
+                    "Trial state and provider env must be outside the frontend dist."
+                )
+            frontend_files = _frontend_hashes(frontend)
+            self._require_stopped()
+            if existing["version"]["commit"] == BASE_COMMIT:
+                if existing["version"]["frontend_files"] != frontend_files:
+                    raise TrialError(
+                        "The active release already has a different frontend build."
+                    )
+                return {"upgraded": False, "version": existing["version"]["commit"]}
+            for name in ("python", "caddy"):
+                if _digest(Path(config[name])) != existing["version"][name]["sha256"]:
+                    raise TrialError(
+                        "A prepared executable changed; restore it before upgrading."
+                    )
+            _existing_file(config["env_file"], "original provider env file")
+            destination = self.root / "release" / RELEASE_ID
+            if destination.exists() or destination.is_symlink():
+                raise TrialError(
+                    "The target release directory already exists; inspect it before retrying."
+                )
+            with tempfile.TemporaryDirectory(prefix=".upgrade-", dir=self.root) as temp:
+                staging = Path(temp)
+                release = staging / RELEASE_ID
+                version = _freeze_source(self.repository, release)
+                version.update(
+                    python=existing["version"]["python"],
+                    caddy=existing["version"]["caddy"],
+                )
+                for relative in frontend_files:
+                    _write_private(
+                        release / "frontend" / relative,
+                        (frontend / relative).read_bytes(),
+                    )
+                if _tree_hashes(release / "frontend") != frontend_files:
+                    raise TrialError("Frontend changed during upgrade; build it again.")
+                version.update(
+                    frontend_files=frontend_files,
+                    frontend_sha256=_bundle_digest(frontend_files),
+                )
+                # Both supported releases use the same application and database schema.
+                if {
+                    key: value
+                    for key, value in version["source_files"].items()
+                    if key.startswith("src/") or key == "uv.lock"
+                } != {
+                    key: value
+                    for key, value in existing["version"]["source_files"].items()
+                    if key.startswith("src/") or key == "uv.lock"
+                }:
+                    raise TrialError(
+                        "This upgrade requires a separate database migration review."
+                    )
+                backup = self._backup()
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                upgrade_dir = self.root / "upgrades" / timestamp
+                previous = upgrade_dir / "previous"
+                for relative in (*existing["managed_files"], "manifest.json"):
+                    _write_private(
+                        previous / relative, (self.root / relative).read_bytes()
+                    )
+                managed = {
+                    "api_launcher.py": API_LAUNCHER.encode(),
+                    "Caddyfile": self._caddyfile(config).encode(),
+                    **self._plists(config),
+                }
+                manifest = {
+                    **existing,
+                    "upgraded_at": datetime.now(timezone.utc).isoformat(),
+                    "config": config,
+                    "version": version,
+                    "managed_files": {
+                        relative: hashlib.sha256(content).hexdigest()
+                        for relative, content in managed.items()
+                    },
+                    "upgrade": {
+                        "from_commit": existing["version"]["commit"],
+                        "rollback_snapshot": str(previous),
+                        "backup": backup,
+                    },
+                }
+                next_snapshot = upgrade_dir / "next"
+                for relative, content in managed.items():
+                    _write_private(next_snapshot / relative, content)
+                _write_private(
+                    next_snapshot / "manifest.json",
+                    (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode(),
+                )
+                os.replace(release, destination)
+                try:
+                    self._activate_snapshot(next_snapshot)
+                except BaseException:
+                    shutil.rmtree(destination)
+                    raise
+            return {
+                "upgraded": True,
+                "version": version["commit"],
+                "backup": backup,
+                "rollback_snapshot": str(previous),
+                "paths": self.paths(),
+            }
+
+    def rollback(self, *, snapshot: str | Path) -> dict:
+        selected = _absolute(snapshot)
+        if (
+            selected.is_symlink()
+            or selected.resolve().parent.parent != self.root / "upgrades"
+            or selected.name not in {"previous", "next"}
+        ):
+            raise TrialError(
+                "Select a release snapshot from this trial's upgrades directory."
+            )
+        with self._lock():
+            self._require_stopped()
+            # Verify the saved release even if an interrupted switch left active files inconsistent.
+            manifest = self._manifest(verify=True, snapshot=selected)
+            self._activate_snapshot(selected)
+            return {
+                "restored": True,
+                "version": manifest["version"]["commit"],
+                "paths": self.paths(),
+            }
 
     def _assert_ports_available(self, config: dict, jobs: dict) -> None:
         listeners = []
@@ -953,47 +1145,46 @@ http://:{CA_PORT} {{
     def backup(self) -> dict:
         with self._lock():
             self._manifest()
-            database = Path(self.paths()["database"])
-            if database.is_symlink() or not database.is_file():
-                raise TrialError("No trial learning database exists yet.")
-            backups = Path(self.paths()["backups"])
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-            destination = backups / f"learning-{timestamp}.sqlite3"
-            temporary = destination.with_suffix(".tmp")
-            _write_private(temporary, b"")
-            deadline = time.monotonic() + 60
+            return self._backup()
 
-            def progress(status: int, remaining: int, total: int) -> None:
-                if time.monotonic() > deadline:
-                    raise TrialError(
-                        "Database backup timed out; retry when writes settle."
-                    )
+    def _backup(self) -> dict:
+        database = self.root / "data/learning.sqlite3"
+        if database.is_symlink() or not database.is_file():
+            raise TrialError("No trial learning database exists yet.")
+        backups = self.root / "backups"
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        destination = backups / f"learning-{timestamp}.sqlite3"
+        temporary = destination.with_suffix(".tmp")
+        _write_private(temporary, b"")
+        deadline = time.monotonic() + 60
 
+        def progress(status: int, remaining: int, total: int) -> None:
+            if time.monotonic() > deadline:
+                raise TrialError("Database backup timed out; retry when writes settle.")
+
+        try:
+            source = sqlite3.connect(
+                f"file:{quote(str(database))}?mode=ro", uri=True, timeout=5
+            )
             try:
-                source = sqlite3.connect(
-                    f"file:{quote(str(database))}?mode=ro", uri=True, timeout=5
-                )
+                target = sqlite3.connect(temporary)
                 try:
-                    target = sqlite3.connect(temporary)
-                    try:
-                        source.backup(target, pages=256, progress=progress, sleep=0.05)
-                        if target.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                            raise TrialError(
-                                "Database backup failed its integrity check."
-                            )
-                    finally:
-                        target.close()
+                    source.backup(target, pages=256, progress=progress, sleep=0.05)
+                    if target.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                        raise TrialError("Database backup failed its integrity check.")
                 finally:
-                    source.close()
-                os.replace(temporary, destination)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                raise
-            return {
-                "backup": str(destination),
-                "bytes": destination.stat().st_size,
-                "sha256": _digest(destination),
-            }
+                    target.close()
+            finally:
+                source.close()
+            os.replace(temporary, destination)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        return {
+            "backup": str(destination),
+            "bytes": destination.stat().st_size,
+            "sha256": _digest(destination),
+        }
 
 
 def _timeout(value: str) -> float:
@@ -1012,7 +1203,16 @@ def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
     subcommands = parser.add_subparsers(dest="command", required=True)
-    for name in ("prepare", "start", "stop", "status", "restart-api", "backup"):
+    for name in (
+        "prepare",
+        "start",
+        "stop",
+        "status",
+        "restart-api",
+        "backup",
+        "upgrade",
+        "rollback",
+    ):
         child = subcommands.add_parser(name)
         # Accept the shared option on either side of the subcommand.
         child.add_argument("--state-dir", type=Path, default=argparse.SUPPRESS)
@@ -1023,6 +1223,10 @@ def create_parser() -> argparse.ArgumentParser:
             child.add_argument("--caddy", type=Path)
             child.add_argument("--hostname", default="chatterpal.local")
             child.add_argument("--lan-ip", required=True)
+        if name == "upgrade":
+            child.add_argument("--frontend-dist", type=Path, required=True)
+        if name == "rollback":
+            child.add_argument("--snapshot", type=Path, required=True)
         if name in ("start", "restart-api"):
             child.add_argument("--timeout", type=_timeout, default=120)
     return parser
@@ -1047,6 +1251,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "commit": manifest["version"]["commit"],
                 "paths": trial.paths(),
             }
+        elif args.command == "upgrade":
+            result = trial.upgrade(frontend_dist=args.frontend_dist)
+        elif args.command == "rollback":
+            result = trial.rollback(snapshot=args.snapshot)
         elif args.command == "start":
             result = trial.start(args.timeout)
         elif args.command == "restart-api":

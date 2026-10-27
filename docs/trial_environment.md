@@ -1,6 +1,6 @@
 # 局域网试用环境
 
-此环境供同一局域网内的电脑和手机连续使用两天。学习主入口是 React「今日练习」，应用版本固定为 `a253d924e7ad92b4585afe1f4d334527b8a61722`。试用环境脚本与应用版本分别管理；日常编辑工作树不改变运行中的应用源码。
+此环境供同一局域网内的电脑和手机使用。学习主入口是 React「今日练习」，脚本固定的目标应用版本为 `173f9f3fe17555f63c14fa6cb18705516b2db49e`。实际运行版本以 `status` 输出为准；脚本同时支持管理和回退此前的 `a253d92` 冻结版本。试用环境脚本与应用版本分别管理，日常编辑工作树不改变运行中的应用源码。
 
 ## 运行方式
 
@@ -86,3 +86,29 @@ Android 部分浏览器不能解析 `.local`，部分访客 Wi-Fi/手机热点�
 停止只卸载本环境进程，不删除学习记录、备份或证书。重启 API 保留 SQLite 和 cookie 身份。备份为 SQLite backup API 的一致性快照，包含当时仍保存的私有音频字节；备份需与学习数据一样保留在本机私有目录，不上传到代码仓库。
 
 若 Mac 的 IP 改变，应先结束当次录音并备份，更新网络配置和证书，再使用原来的固定主机名验证；不要直接删除状态目录重建。不要在有人使用时替换冻结版本。
+
+## 升级既有试用环境
+
+`prepare` 继续拒绝覆盖已有环境。`upgrade` 仅支持将 `a253d92` 升至上述已验收版本，且检查应用 `src/` 与 `uv.lock` 不变；涉及其他后端或数据库结构变更时需要单独评估。先确认所有录音和提交已结束，再在目标提交的干净前端源码上构建：
+
+```bash
+npm --prefix frontend run build
+/path/to/python scripts/trial_environment.py backup
+/path/to/python scripts/trial_environment.py stop
+/path/to/python scripts/trial_environment.py upgrade --frontend-dist frontend/dist
+/path/to/python scripts/trial_environment.py start
+/path/to/python scripts/trial_environment.py status
+```
+
+升级要求本环境的三个 launchd 任务均已停止，并在切换前再次创建 SQLite 一致性备份。源码和前端复制到新的 `release/173f9f3/`，旧发布目录保留；启动配置和版本清单的前后快照保存在本机私有 `upgrades/` 目录。数据库、原提供商配置路径、CA、访问地址和学习身份继续使用原值。应在启动后用原入口、原浏览器检查历史并实际录音核对。
+
+若新版本启动或验收失败，使用升级输出的 `rollback_snapshot` 路径恢复配置，再启动：
+
+```bash
+/path/to/python scripts/trial_environment.py stop
+/path/to/python scripts/trial_environment.py rollback --snapshot /path/to/state/upgrades/TIMESTAMP/previous
+/path/to/python scripts/trial_environment.py start
+/path/to/python scripts/trial_environment.py status
+```
+
+回退只恢复应用版本与启动配置，保留升级后新增的学习记录，不自动覆盖数据库。升级记录中的 SQLite 备份供需要时另行恢复。中断切换后的配置也可通过保存的快照恢复；不要删除状态目录。
