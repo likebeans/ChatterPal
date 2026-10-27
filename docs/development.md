@@ -1,577 +1,192 @@
-# ChatterPal 开发文档
+# 开发与验证 ChatterPal
 
-## 开发环境搭建
+本页面向修改源码和测试的贡献者，说明如何启动应用、选择验证范围和复现持续集成（CI）检查。产品入口见 [README](../README.md)，贡献流程见 [CONTRIBUTING.md](../CONTRIBUTING.md)，提供商与容器配置见[部署指南](deployment.md)。
 
-### 系统要求
+## 准备开发环境
 
-- Python >=3.12
-- Git
-- 网络连接（用于下载依赖和API调用）
+开发基线使用 [`.python-version`](../.python-version) 指定的 Python 3.12，前端使用 Node.js 20+ 和 npm。安装 [uv](https://docs.astral.sh/uv/getting-started/installation/)；当前 CI 使用 uv 0.10.7，并从 `uv.lock` 安装冻结依赖。
 
-### 开发工具推荐
+默认开发依赖组包含完整运行时和测试工具，安装 PyAudio 等扩展需要原生依赖。macOS 与 Ubuntu / Debian 可按下列命令准备；其他系统及编译失败处理见[原生依赖说明](deployment.md#原生依赖与安装失败排查)，不据此推断所有平台已经验证。
 
-- **IDE**: VS Code, PyCharm
-- **Python包管理**: uv (推荐) 或 pip
-- **代码格式化**: black, isort
-- **代码检查**: flake8, mypy
-- **测试**: pytest
+macOS 使用 Homebrew 安装音频工具；缺少编译工具时先安装 Xcode Command Line Tools：
 
-### 环境配置
+```bash
+xcode-select --install
+brew install ffmpeg flac portaudio libsndfile
+```
 
-#### 1. 克隆项目
+Ubuntu / Debian 安装音频库与构建工具，并确保 Python 头文件匹配实际的 3.12 解释器：
+
+```bash
+sudo apt-get update
+sudo apt-get install build-essential python3-dev portaudio19-dev ffmpeg flac libsndfile1
+```
+
+克隆仓库并安装冻结的开发依赖。以下命令从仓库根目录执行，后文另有说明的前端命令除外：
+
 ```bash
 git clone https://github.com/likebeans/ChatterPal.git
 cd ChatterPal
+uv python install 3.12
+uv sync --frozen --python 3.12
+npm --prefix frontend ci --no-audit --no-fund
 ```
 
-#### 2. 安装开发依赖
-```bash
-# 使用 uv (推荐)
-uv sync --dev
+默认 `uv sync` 会安装 `dev` 依赖组，其中包含 `full` 运行时，无需额外添加 `--dev`。只做前端开发时可仅安装 Node.js 依赖；选择较小的 Python 运行时 extras 时参考[安装配置](deployment.md#克隆并安装)。本页的后端测试依赖完整开发环境。
 
-# 或使用 pip
-pip install -e ".[dev]"
-```
+## 启动 React 与 API
 
-#### 3. 配置开发环境
+React 是主要界面，Vite 默认在 3010 端口提供页面，并将 `/api` 代理到本机 8010。正常学习流程需要选定提供商的配置；仅执行默认测试或浏览器 fixture 检查无需填写真实凭据。
+
+需要启动真实应用时，在根目录复制模板，编辑提供商配置，再检查字段类型：
+
 ```bash
-# 复制环境变量模板
 cp .env.example .env
-
-# 安装 pre-commit hooks
-pre-commit install
+uv run --frozen python scripts/verify_deployment_config.py
+uv run --frozen chatterpal-run --help
 ```
 
-#### 4. 验证安装
-```bash
-# 运行测试
-pytest
+配置检查器默认读取 `.env.example`，如需检查自己的文件及必需凭据，使用 `uv run --frozen python scripts/verify_deployment_config.py --env-file .env --require-credentials`。它只检查本地配置，不验证远端密钥有效性；进程环境变量优先于 `.env`，字段定义见 [`Settings`](../src/chatterpal/config/settings.py)。
 
-# 启动应用
-python scripts/run.py
-```
-
-## 项目架构
-
-### 目录结构详解
-
-```
-src/chatterpal/
-├── __init__.py
-├── config/                 # 配置管理
-│   ├── __init__.py
-│   ├── settings.py        # 配置类定义
-│   └── loader.py          # 配置加载器
-├── core/                  # 核心功能模块
-│   ├── __init__.py
-│   ├── asr/              # 语音识别
-│   │   ├── __init__.py
-│   │   ├── base.py       # ASR基类
-│   │   ├── whisper.py    # Whisper实现
-│   │   └── aliyun.py     # 阿里云ASR
-│   ├── tts/              # 语音合成
-│   │   ├── __init__.py
-│   │   ├── base.py       # TTS基类
-│   │   └── edge.py       # Edge TTS
-│   ├── llm/              # 大语言模型
-│   │   ├── __init__.py
-│   │   ├── base.py       # LLM基类
-│   │   ├── openai.py     # OpenAI接口
-│   │   └── alibaba.py    # 阿里云通义千问
-│   └── assessment/       # 发音评估
-│       ├── __init__.py
-│       ├── base.py       # 评估基类
-│       ├── prosody.py    # 韵律分析
-│       ├── phoneme.py    # 音素分析
-│       └── corrector.py  # 发音纠错
-├── services/             # 业务服务层
-│   ├── __init__.py
-│   ├── chat.py          # 对话服务
-│   ├── evaluation.py    # 评估服务
-│   └── correction.py    # 纠错服务
-├── web/                 # Web界面
-│   ├── __init__.py
-│   ├── app.py          # 主应用
-│   └── components/     # UI组件
-│       ├── __init__.py
-│       ├── chat_tab.py
-│       ├── score_tab.py
-│       └── correct_tab.py
-└── utils/              # 工具函数
-    ├── __init__.py
-    ├── audio.py        # 音频处理
-    ├── text.py         # 文本处理
-    └── logger.py       # 日志工具
-```
-
-### 设计模式
-
-#### 1. 策略模式 (Strategy Pattern)
-用于ASR、TTS、LLM模块，支持多种实现的切换：
-
-```python
-# 基类定义接口
-class BaseASR:
-    def transcribe(self, audio_path: str) -> str:
-        raise NotImplementedError
-
-# 具体实现
-class WhisperASR(BaseASR):
-    def transcribe(self, audio_path: str) -> str:
-        # Whisper实现
-        pass
-
-class AliyunASR(BaseASR):
-    def transcribe(self, audio_path: str) -> str:
-        # 阿里云实现
-        pass
-```
-
-#### 2. 依赖注入 (Dependency Injection)
-服务层通过构造函数注入依赖：
-
-```python
-class ChatService:
-    def __init__(self, asr: BaseASR, tts: BaseTTS, llm: BaseLLM):
-        self.asr = asr
-        self.tts = tts
-        self.llm = llm
-```
-
-#### 3. 工厂模式 (Factory Pattern)
-用于创建不同类型的服务实例：
-
-```python
-def create_asr_engine(engine_type: str) -> BaseASR:
-    if engine_type == "whisper":
-        return WhisperASR()
-    elif engine_type == "aliyun":
-        return AliyunASR()
-    else:
-        raise ValueError(f"Unknown ASR engine: {engine_type}")
-```
-
-## 开发规范
-
-### 代码风格
-
-#### Python代码规范
-- 遵循 PEP 8 标准
-- 使用 black 进行代码格式化
-- 使用 isort 进行导入排序
-- 使用 flake8 进行代码检查
+在根目录启动 API；`--mode api` 必须显式指定，因为 CLI 的默认模式是 Gradio：
 
 ```bash
-# 格式化代码
-black src/ tests/
-isort src/ tests/
-
-# 检查代码
-flake8 src/ tests/
+uv run --frozen chatterpal-run --mode api --host 127.0.0.1 --port 8010
 ```
 
-#### 类型注解
-所有公共函数和方法都应该有类型注解：
-
-```python
-from typing import List, Dict, Optional
-
-def process_audio(audio_path: str, config: Dict[str, str]) -> Optional[str]:
-    """处理音频文件并返回转录结果"""
-    pass
-```
-
-#### 文档字符串
-使用 Google 风格的文档字符串：
-
-```python
-def transcribe_audio(audio_path: str, language: str = "en") -> str:
-    """转录音频文件为文本
-    
-    Args:
-        audio_path: 音频文件路径
-        language: 语言代码，默认为英语
-        
-    Returns:
-        转录的文本内容
-        
-    Raises:
-        FileNotFoundError: 音频文件不存在
-        ASRError: 转录过程中发生错误
-    """
-    pass
-```
-
-### Git 工作流
-
-#### 分支策略
-- `main`: 主分支，保持稳定
-- `develop`: 开发分支
-- `feature/*`: 功能分支
-- `bugfix/*`: 修复分支
-- `hotfix/*`: 紧急修复分支
-
-#### 提交规范
-使用 Conventional Commits 规范：
+另开终端，从根目录进入前端目录启动 Vite：
 
 ```bash
-# 功能添加
-git commit -m "feat: 添加语音识别模块"
-
-# 修复bug
-git commit -m "fix: 修复音频处理内存泄漏问题"
-
-# 文档更新
-git commit -m "docs: 更新API文档"
-
-# 代码重构
-git commit -m "refactor: 重构配置管理模块"
-
-# 测试相关
-git commit -m "test: 添加ASR模块单元测试"
+cd frontend
+npm run dev -- --host 127.0.0.1 --port 3010 --strictPort
 ```
 
-## 测试指南
+打开 [React 页面](http://127.0.0.1:3010)、[API 文档](http://127.0.0.1:8010/docs)或[健康接口](http://127.0.0.1:8010/health)。`/health` 反映本地组件初始化状态；默认本地 Whisper 首次识别可能下载模型，Edge TTS 和云端提供商需要网络，部分提供商调用会计费。
 
-### 测试结构
+多 worktree 开发时，为 API 设置独立端口和 `LEARNING_DB_PATH`，并通过 `CHATTERPAL_API_TARGET` 将 Vite 代理指向该 API。直接跨源请求还需配置 `LEARNING_ALLOWED_ORIGINS`；具体配置见[独立开发端口说明](deployment.md#int2-学习流程与独立开发端口)。
 
-```
-tests/
-├── __init__.py
-├── conftest.py              # pytest配置
-├── test_asr.py             # ASR模块测试
-├── test_tts.py             # TTS模块测试
-├── test_llm.py             # LLM模块测试
-├── test_assessment.py      # 评估模块测试
-├── test_services.py        # 服务层测试
-├── test_web_components.py  # Web组件测试
-└── test_config.py          # 配置测试
-```
+Gradio 作为可选界面保留。完整开发环境已包含依赖；在根目录运行 `uv run --frozen chatterpal-run --mode web --host 127.0.0.1 --port 7860`，然后打开 [Gradio 页面](http://127.0.0.1:7860)。
 
-### 运行测试
+## 定位要修改的模块
+
+按运行路径查找实现与契约，避免把历史验收记录当作当前命令定义：
+
+| 路径 | 职责 |
+| --- | --- |
+| `frontend/src/` | React 界面、录音编码、API 客户端和学习流程 |
+| `src/chatterpal/web/` | FastAPI 服务、路由、音频资源与可选 Gradio 界面 |
+| `src/chatterpal/learning/` | 任务、转录确认、重练、复习和 SQLite 存储 |
+| `src/chatterpal/services/` | 聊天、纠错、评估和会话服务 |
+| `src/chatterpal/core/` | ASR、LLM、TTS 适配器和音频分析 |
+| `src/chatterpal/config/`、`src/chatterpal/cli/` | 配置校验、组件构造和公开命令 |
+| `tests/`、`frontend/src/test/`、`frontend/browser-tests/` | 后端、前端单元测试和浏览器 fixture 驱动 |
+| `scripts/`、`.github/workflows/tests.yml` | 跨层验收脚本与 CI 命令 |
+
+修改学习数据结构和接口时，对照[学习 API 契约](learning_api_contract.md)与[存储契约](learning_store_contract.md)。Python 格式与类型工具配置在 `pyproject.toml`，前端脚本在 `frontend/package.json`；沿用相邻代码风格并保持改动集中。
+
+## 选择验证范围
+
+根据行为变化选择相关测试，PR 中记录执行命令和结果。完整后端回归、浏览器 fixture、真实 HTTP 与真实服务验收具有不同边界，应分别说明执行范围。
+
+### 运行后端局部测试
+
+[`tests/conftest.py`](../tests/conftest.py) 默认隔离主机凭据和数据路径，阻止外部网络、真实模型加载与实体录音设备访问，允许回环地址通信。默认用例使用 provider double、合成音频和临时存储；安装依赖及准备 wheelhouse 的下载发生在测试之前。
+
+在根目录运行与改动相关的用例。例如配置变化可运行以下测试，`--no-cov` 仅为局部诊断关闭全包覆盖率检查：
 
 ```bash
-# 运行所有测试
-pytest
-
-# 运行特定模块测试
-pytest tests/test_asr.py
-
-# 运行测试并生成覆盖率报告
-pytest --cov=src/chatterpal --cov-report=html
-
-# 运行测试（详细输出）
-pytest -v
+uv run --frozen python -m pytest tests/test_configuration_contract.py -q --no-cov
 ```
 
-### 编写测试
+同样可选择 `tests/learning/` 下的具体文件或 `-k` 条件。单文件结果不能替代完整回归的覆盖率结论；若包含 `tests/test_packaged_cli.py`，先执行下一节的 wheelhouse 准备。
 
-#### 单元测试示例
-```python
-import pytest
-from unittest.mock import Mock, patch
-from chatterpal.core.asr.whisper import WhisperASR
+### 准备完整后端测试
 
-class TestWhisperASR:
-    def setup_method(self):
-        self.asr = WhisperASR()
-    
-    @patch('whisper.load_model')
-    def test_transcribe_success(self, mock_load_model):
-        # 模拟Whisper模型
-        mock_model = Mock()
-        mock_model.transcribe.return_value = {"text": "Hello world"}
-        mock_load_model.return_value = mock_model
-        
-        result = self.asr.transcribe("test.wav")
-        assert result == "Hello world"
-    
-    def test_transcribe_file_not_found(self):
-        with pytest.raises(FileNotFoundError):
-            self.asr.transcribe("nonexistent.wav")
-```
+完整测试包含在仓库外构建、安装 wheel 并检查公开 CLI 的用例。它们要求设置 `CHATTERPAL_TEST_WHEELHOUSE`，并在测试前下载基础依赖和构建后端的 wheel；缺少该目录时会失败，即使其他依赖已经缓存。
 
-#### 集成测试示例
-```python
-def test_chat_service_integration():
-    """测试聊天服务的完整流程"""
-    # 创建真实的服务实例
-    chat_service = ChatService(
-        asr=WhisperASR(),
-        tts=EdgeTTS(),
-        llm=OpenAILLM()
-    )
-    
-    # 测试完整的对话流程
-    response = chat_service.process_conversation("test_audio.wav")
-    assert response is not None
-    assert "audio_path" in response
-```
-
-### Mock和Fixture
-
-#### 使用Fixture
-```python
-# conftest.py
-import pytest
-from chatterpal.config.settings import Settings
-
-@pytest.fixture
-def test_settings():
-    """测试用的配置"""
-    return Settings(
-        openai_api_key="test_key",
-        whisper_model="tiny",
-        log_level="DEBUG"
-    )
-
-@pytest.fixture
-def sample_audio_file(tmp_path):
-    """创建测试用的音频文件"""
-    audio_file = tmp_path / "test.wav"
-    # 创建一个简单的音频文件
-    return str(audio_file)
-```
-
-#### Mock外部依赖
-```python
-@patch('chatterpal.core.llm.openai.openai.ChatCompletion.create')
-def test_openai_llm(mock_create):
-    mock_create.return_value = {
-        "choices": [{"message": {"content": "Test response"}}]
-    }
-    
-    llm = OpenAILLM()
-    response = llm.chat([{"role": "user", "content": "Hello"}])
-    assert response == "Test response"
-```
-
-## 调试指南
-
-### 日志配置
-
-```python
-# 在代码中使用日志
-from chatterpal.utils.logger import get_logger
-
-logger = get_logger(__name__)
-
-def process_audio(audio_path: str):
-    logger.info(f"开始处理音频文件: {audio_path}")
-    try:
-        # 处理逻辑
-        result = do_processing(audio_path)
-        logger.info("音频处理完成")
-        return result
-    except Exception as e:
-        logger.error(f"音频处理失败: {e}")
-        raise
-```
-
-### 调试技巧
-
-#### 1. 使用断点调试
-```python
-import pdb
-
-def debug_function():
-    pdb.set_trace()  # 设置断点
-    # 调试代码
-```
-
-#### 2. 性能分析
-```python
-import cProfile
-import pstats
-
-def profile_function():
-    profiler = cProfile.Profile()
-    profiler.enable()
-    
-    # 要分析的代码
-    your_function()
-    
-    profiler.disable()
-    stats = pstats.Stats(profiler)
-    stats.sort_stats('cumulative')
-    stats.print_stats()
-```
-
-#### 3. 内存使用监控
-```python
-import tracemalloc
-
-tracemalloc.start()
-
-# 你的代码
-
-current, peak = tracemalloc.get_traced_memory()
-print(f"Current memory usage: {current / 1024 / 1024:.1f} MB")
-print(f"Peak memory usage: {peak / 1024 / 1024:.1f} MB")
-tracemalloc.stop()
-```
-
-## 性能优化
-
-### 音频处理优化
-
-#### 1. 异步处理
-```python
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-
-async def process_audio_async(audio_path: str):
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor() as executor:
-        result = await loop.run_in_executor(
-            executor, process_audio_sync, audio_path
-        )
-    return result
-```
-
-#### 2. 缓存机制
-```python
-from functools import lru_cache
-
-@lru_cache(maxsize=128)
-def load_model(model_name: str):
-    """缓存模型加载"""
-    return expensive_model_loading(model_name)
-```
-
-#### 3. 批处理
-```python
-def process_audio_batch(audio_paths: List[str]) -> List[str]:
-    """批量处理音频文件"""
-    results = []
-    for batch in chunk_list(audio_paths, batch_size=10):
-        batch_results = model.process_batch(batch)
-        results.extend(batch_results)
-    return results
-```
-
-## 部署和发布
-
-### 本地开发部署
-```bash
-# 启动开发服务器
-python scripts/run.py --debug
-
-# 指定端口
-python scripts/run.py --port 8080
-```
-
-### 生产环境部署
-参考 [部署文档](deployment.md) 了解详细的生产环境部署步骤。
-
-### 版本发布流程
-
-1. **更新版本号**
-```bash
-# 在 pyproject.toml 中更新版本
-version = "1.2.0"
-```
-
-2. **创建发布分支**
-```bash
-git checkout -b release/v1.2.0
-git push origin release/v1.2.0
-```
-
-3. **创建Pull Request**
-- 从 release 分支到 main 分支
-- 进行代码审查
-- 运行完整测试套件
-
-4. **合并和标记**
-```bash
-git checkout main
-git merge release/v1.2.0
-git tag v1.2.0
-git push origin main --tags
-```
-
-## 贡献指南
-
-### 如何贡献
-
-1. **Fork项目**
-2. **创建功能分支**
-```bash
-git checkout -b feature/new-feature
-```
-
-3. **提交更改**
-```bash
-git commit -m "feat: 添加新功能"
-```
-
-4. **推送分支**
-```bash
-git push origin feature/new-feature
-```
-
-5. **创建Pull Request**
-
-### 代码审查清单
-
-- [ ] 代码符合项目规范
-- [ ] 添加了适当的测试
-- [ ] 更新了相关文档
-- [ ] 通过了所有测试
-- [ ] 没有引入新的安全问题
-- [ ] 性能没有明显下降
-
-### 问题报告
-
-使用GitHub Issues报告问题时，请包含：
-
-- 问题描述
-- 复现步骤
-- 期望行为
-- 实际行为
-- 环境信息（Python版本、操作系统等）
-- 相关日志或错误信息
-
-## 常见问题
-
-### Q: 如何添加新的ASR引擎？
-
-A: 继承 `BaseASR` 类并实现 `transcribe` 方法：
-
-```python
-from chatterpal.core.asr.base import BaseASR
-
-class NewASR(BaseASR):
-    def transcribe(self, audio_path: str) -> str:
-        # 实现转录逻辑
-        return transcribed_text
-```
-
-### Q: 如何自定义配置？
-
-A: 在 `.env` 文件中添加配置项，或在 `settings.py` 中添加新的配置字段。
-
-### Q: 如何调试音频处理问题？
-
-A: 启用详细日志并检查临时音频文件：
+在 macOS / Linux 的同一终端中创建临时根目录；以下下载命令与 [CI 的准备步骤](../.github/workflows/tests.yml)一致，CI 额外通过 `GITHUB_ENV` 把变量传给后续步骤：
 
 ```bash
-export LOG_LEVEL=DEBUG
-python scripts/run.py
+export RUNNER_TEMP="$(mktemp -d)"
+export CHATTERPAL_TEST_WHEELHOUSE="$RUNNER_TEMP/packaged-cli-wheelhouse"
+uv export --frozen --no-dev --no-emit-project --quiet --output-file "$RUNNER_TEMP/packaged-cli-requirements.txt"
+uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" --requirement "$RUNNER_TEMP/packaged-cli-requirements.txt"
+uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" hatchling
 ```
 
-### Q: 如何优化内存使用？
+安装完成并保留上述环境变量后，在根目录执行与 CI 相同的收集和回归命令：
 
-A: 
-- 使用较小的Whisper模型
-- 启用音频文件缓存清理
-- 调整批处理大小
+```bash
+uv run --frozen python -m pytest -o addopts='' --collect-only -q
+uv run --frozen python -m pytest -q --cov-report=xml --junitxml=pytest-results.xml -W error::RuntimeWarning -W error::pytest.PytestUnhandledThreadExceptionWarning
+```
 
-## 资源链接
+[`pyproject.toml`](../pyproject.toml) 默认启用整个 `src/chatterpal` 包的覆盖率统计，并要求至少 80%。报告写入终端、`htmlcov/` 和 `coverage.xml`，JUnit 结果写入 `pytest-results.xml`；完整验收保留这一门槛。CI 的后端 job ID 为 `offline`，其检查范围不包含真实服务、模型推理或实体麦克风验收。
 
-- [Python官方文档](https://docs.python.org/)
-- [Gradio文档](https://gradio.app/docs/)
-- [OpenAI API文档](https://platform.openai.com/docs/)
-- [Whisper文档](https://github.com/openai/whisper)
-- [pytest文档](https://docs.pytest.org/)
+### 运行前端检查
+
+在 `frontend/` 中执行单元测试、包含 TypeScript 检查的生产构建和 ESLint 检查：
+
+```bash
+npm test
+npm run build
+npm run lint
+```
+
+这些命令对应 CI 的 `frontend` job 中的基础检查。交互、录音、请求恢复或布局变化时，继续执行适用的浏览器验证；CI 实际包含哪些浏览器步骤以 `tests.yml` 为准。
+
+### 使用浏览器 fixture 验证交互
+
+`frontend/browser-tests/` 通过 Playwright 启动 Chromium，以假麦克风和拦截后的 API 响应验证界面、录音编码及资源释放。它不需要 Python API 或真实提供商，也不验证后端存储和远端服务。
+
+先在 `frontend/` 安装 Chromium；Linux 缺少浏览器系统依赖时使用 `npx playwright install --with-deps chromium`：
+
+```bash
+npx playwright install chromium
+npm run dev -- --host 127.0.0.1 --port 3010 --strictPort
+```
+
+保持 Vite 运行，在另一个终端的 `frontend/` 目录显式传入相同页面地址：
+
+```bash
+npm run test:browser -- http://127.0.0.1:3010
+npm run test:learning:browser -- http://127.0.0.1:3010
+```
+
+两个驱动不会自行启动 Vite，省略 URL 时的默认端口分别为 3012 和 13204。`CHROME_EXECUTABLE_PATH` 可指定已有 Chromium / Chrome 可执行文件；`BROWSER_OUTPUT_DIR` 可指定截图和 `results.json` 的输出目录，建议使用仓库外的临时目录。
+
+### 验证真实 HTTP、SQLite 与转录确认
+
+仓库根目录的浏览器驱动可以自行启动 API 和 Vite，使用真实 HTTP、cookie 与临时 SQLite，但在提供商边界注入受控实现。需要完整 Python 开发环境、已安装的前端依赖和 Chromium；它们不会证明真实 ASR / LLM / TTS 服务有效。
+
+按改动选择对应脚本，从根目录执行。例如转录确认与复习变化可运行以下命令：
+
+```bash
+node scripts/verify_transcript_confirmation_browser.cjs
+node scripts/verify_learning_review_browser.cjs
+```
+
+两者使用 `.venv/bin/python` 作为默认解释器。转录确认脚本使用 `TRANSCRIPT_PYTHON` 指定解释器，API / UI 端口默认为 18240 / 13240，可通过 `TRANSCRIPT_API_PORT` / `TRANSCRIPT_UI_PORT` 调整。复习脚本使用 `INT2_PYTHON` 指定解释器，端口默认为 18220 / 13220，可通过 `REVIEW_API_PORT` / `REVIEW_UI_PORT` 调整。脚本输出验收目录，分享日志、截图或数据库前先检查私有数据。
+
+### 单独运行真实服务、模型或设备验收
+
+pytest 的 `external_api`、`model`、`device` marker 分别需要 `--run-external`、`--run-models`、`--run-devices` 显式开启。仅添加开关不会把已有 mock 用例变成真实服务测试；新增真实测试时，同时标注资源 marker 并准备对应凭据、模型或设备。
+
+[`verify_int2_live.cjs`](../scripts/verify_int2_live.cjs) 与 [`verify_transcript_confirmation_live.cjs`](../scripts/verify_transcript_confirmation_live.cjs) 使用真实提供商，不属于默认离线回归。后者要求 `TRANSCRIPT_ENV_FILE` 指向私有配置，使用 macOS `say`、FFmpeg / ffprobe 和合成语音驱动假麦克风，还可能触发本地模型下载及付费调用。只有需要验证对应外部服务时才按脚本前提运行，并记录平台、模型、输入和实际调用范围。
+
+用 Chromium 的手机尺寸视口测试布局，只能说明该视口的行为。合成输入、真实服务调用和实体设备验收应分别记录；不要把其中一种结果写成真人发音、实体手机或其他操作系统已经验证。
+
+## 排查环境与运行问题
+
+先区分依赖安装、本地配置、应用行为与真实服务错误，再选择检查：
+
+| 现象 | 排查方向 |
+| --- | --- |
+| 安装时报 `portaudio.h` 或编译错误 | 检查原生音频库、编译器与 Python 3.12 头文件，参考部署指南 |
+| `tests/test_packaged_cli.py` 报缺少 wheelhouse | 在同一终端完成 wheel 下载并保留 `CHATTERPAL_TEST_WHEELHOUSE` |
+| 浏览器脚本连不上页面 | 确认 Vite 已启动、URL 与端口一致，或跨层驱动使用的端口未被占用 |
+| 页面正常但 `/api` 请求失败 | 检查 API 地址、`CHATTERPAL_API_TARGET` 与开发服务器代理；直接跨源时核对允许的 Origin |
+| 配置修改未生效 | 检查进程环境变量覆盖并重启服务；读取 `.env` 的优先级见部署指南 |
+| `/health` 成功但聊天或音频失败 | 查看服务端进程输出，并分别检查提供商配置、网络与模型资源 |
+
+需要进一步反馈时，按[问题报告说明](../CONTRIBUTING.md#报告问题或提出功能建议)提供最小复现和脱敏结果。凭据、真实对话、原音、数据库、cookie 与浏览器存储状态都可能包含私有信息，安全问题按 [SECURITY.md](../SECURITY.md) 处理。

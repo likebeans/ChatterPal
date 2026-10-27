@@ -1,0 +1,29 @@
+name: 功能建议
+description: 描述使用场景、遇到的困难和期望改进。
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        欢迎分享具体的练习或开发场景。请先搜索现有 Issue，避免提交重复建议。
+        请勿填写个人学习记录、API Key 或其他敏感信息。
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景与问题
+      description: 谁在什么情况下遇到了什么困难？目前如何处理？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的改进
+      description: 描述期望行为和判断改进有效的方式；可以附上交互示例。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案与补充信息
+      description: 已考虑的替代方案、相关 Issue 或参考资料（可选）。

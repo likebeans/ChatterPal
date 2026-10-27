@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    groups:
+      frontend-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+# Python 依赖继续通过 uv lock 和 uv sync --frozen 手动更新、验证。

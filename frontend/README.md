@@ -1,6 +1,6 @@
 # ChatterPal 前端开发与学习验收
 
-学习工作区使用正式学习接口，支持任务对话、原句反馈、关联重练、历史恢复、明确保存的复习与事实型进度。main `d98b13b` 已包含 INT2 和复习；当前工作树增加录音转写核对。共同边界见 [学习 API 契约](../docs/learning_api_contract.md)。
+React 18 + TypeScript + Vite 前端是任务学习主入口，支持情境对话、原句反馈、关联重练、录音转写核对、历史恢复、延迟复习与事实型进度。界面统一桌面与移动端的导航、任务卡片、录音输入和反馈呈现。共同边界见[学习 API 契约](../docs/learning_api_contract.md)，开发环境见[开发指南](../docs/development.md)。
 
 ## 开发与检查
 
@@ -10,10 +10,10 @@ npm test
 npm run lint
 npm run build
 CHATTERPAL_API_TARGET=http://127.0.0.1:8010 \
-  npm run dev -- --host 127.0.0.1 --port 13204 --strictPort
+  npm run dev -- --host 127.0.0.1 --port 3010 --strictPort
 ```
 
-Vite 默认将 `/api` 代理到 `http://127.0.0.1:8010`，可用 `CHATTERPAL_API_TARGET` 指向独立后端。学习服务需允许页面对应的开发 Origin；也可由后端同源提供 `dist/`。
+Vite 默认将 `/api` 代理到 `http://localhost:8010`，可用 `CHATTERPAL_API_TARGET` 指向独立后端。默认允许的开发 Origin 包含 `localhost:3010` 和 `127.0.0.1:3010`；使用其他页面端口时同步设置后端的 `LEARNING_ALLOWED_ORIGINS`。生产构建输出到 `dist/`，Docker 前端由 nginx 提供静态文件并代理 `/api`。
 
 ## 模块与接口
 
@@ -53,21 +53,21 @@ localStorage 仅保存恢复操作所需的请求、操作、动作、会话、�
 
 ## 自动验收
 
-`npm test` 覆盖既有自由对话与分析、学习流程、草稿恢复、即时文字建议、并发迟到响应、复习排程和服务端 HTTP 形状边界。`npm run lint` 和 `npm run build` 检查所有前端代码与类型。当前录音核对工作树 186 项、12 个测试文件全部通过，build 和 lint 通过，详见[CI 修复与录音核对验收](../docs/transcript_confirmation_acceptance_2026-10-26.md)。main `d98b13b` 的 155 项和 INT2 的 133 项为历史结果，保留在[剩余优化验收](../docs/remaining_optimizations_acceptance_2026-10-26.md)。
+`npm test` 覆盖自由对话与分析、学习流程、草稿恢复、即时文字建议、并发迟到响应、复习排程和 HTTP 响应边界。`npm run lint` 和 `npm run build` 检查前端代码与类型。GitHub Actions 中对应提交的检查结果见 [CI](https://github.com/likebeans/ChatterPal/actions/workflows/tests.yml)；功能验证范围见[最终验收](../docs/final_acceptance_2026-10-26.md)。
 
 已有学习浏览器脚本使用离线 INT2 契约 fixture，只在测试驱动中拦截 API，不属于真实教学服务或线上记录。生产页面不加载 fixture。
 
 ```bash
 CHROME_EXECUTABLE_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
   BROWSER_OUTPUT_DIR=/tmp/chatterpal-int2-contract-browser \
-  npm run test:learning:browser -- http://127.0.0.1:13204
-npm run test:browser -- http://127.0.0.1:13204
+  npm run test:learning:browser -- http://127.0.0.1:3010
+npm run test:browser -- http://127.0.0.1:3010
 ```
 
 契约 fixture 脚本覆盖提示后草稿保留、pending 恢复、关联尝试及录音生命周期；其中历史复习未接入 fixture 只用于服务降级兼容，不表示正式服务仍未接入。脚本检查 375px 与横屏布局，启用 reduced motion，输出截图和 `results.json`。旧浏览器脚本继续覆盖自由对话、口语纠正和音频竞态。
 
 真实 APIServer + SQLite + 受控 provider 的 socket 验收使用 `node ../scripts/verify_int2_browser.cjs`（需要在仓库安装 Python 环境，或通过 `INT2_PYTHON` 指定解释器）。驱动自行启动隔离服务，完成三轮对话、反馈、两次关联重练、刷新和实际 API 重启；默认端口为 18200/13200。
 
-复习的实际页面验收为 `node ../scripts/verify_learning_review_browser.cjs`，默认端口 18220/13220。它使用受控提供商和注入的 UTC 时钟，覆盖到期前隐藏、3／7 天间隔、提示与看答案留痕、延期、冲突保稿、API 重启、录音上传回放、事实型进度、身份隔离，以及餐厅和酒店任务。这些驱动均不拦截教学 API。录音核对的专项真实浏览器验收为 `node ../scripts/verify_transcript_confirmation_browser.cjs`（可通过 `TRANSCRIPT_PYTHON` 指定解释器），默认端口 18240/13240；使用实际 APIServer、SQLite、录音 UI 和受控提供商验证任务、重练、复习的核对提交、机器/确认文字来源、ASR 次数、同一音频资产及刷新/重启恢复。实际云端延迟、真人发音表现及跨日学习效果需要独立验证。
+复习的实际页面验收为 `node ../scripts/verify_learning_review_browser.cjs`，默认端口 18220/13220。它使用受控提供商和注入的 UTC 时钟，覆盖到期前隐藏、3／7 天间隔、提示与看答案留痕、延期、冲突保稿、API 重启、录音上传回放、事实型进度、身份隔离，以及餐厅和酒店任务。这些驱动均不拦截教学 API。录音核对的专项浏览器验收为 `node ../scripts/verify_transcript_confirmation_browser.cjs`（可通过 `TRANSCRIPT_PYTHON` 指定解释器），默认端口 18240/13240；使用实际 APIServer、SQLite、录音 UI 和受控提供商验证任务、重练、复习的核对提交、机器/确认文字来源、ASR 次数、同一音频资产及刷新/重启恢复。实际云端延迟、真人发音表现及跨日学习效果需要独立验证。
 
-调用本地 `.env` 中真实提供商的驱动为 `node ../scripts/verify_int2_live.cjs`，默认端口 18210/13210，使用固定合成语音进入真实录音 UI；会调用外部服务。main `d98b13b` 在 2026-10-26 以 Qwen3.8-27B、Whisper base 与 Edge TTS 完成三轮、反馈、两次关联重练及刷新/重启恢复，12 次提供商调用全部成功，没有触发重试。此历史结果尚不覆盖当前新增的转写核对流程。结束反馈约 40 秒；此前观察到的服务故障和格式错误一并保留在[剩余优化验收](../docs/remaining_optimizations_acceptance_2026-10-26.md)。2026-10-25 的[历史验收](../docs/int2_live_provider_acceptance_2026-10-25.md)继续保留。
+真实提供商驱动包括 `node ../scripts/verify_int2_live.cjs`（默认端口 18210/13210）和 `node ../scripts/verify_transcript_confirmation_live.cjs`（通过 `TRANSCRIPT_ENV_FILE` 选择配置）。这些脚本使用合成语音、访问外部服务，可能下载模型或产生费用；需先满足[开发指南](../docs/development.md#单独运行真实服务模型或设备验收)所述前置条件。各次运行的版本、耗时和适用范围保留在[最终验收](../docs/final_acceptance_2026-10-26.md)及[历史验收索引](../docs/README.md#验证记录)中。

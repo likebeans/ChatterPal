@@ -1,151 +1,218 @@
 # ChatterPal
 
-ChatterPal 是一个英语口语练习项目，提供 React + FastAPI 学习流程，也保留独立的 Gradio 界面。它复用 Whisper / 阿里云 ASR、OpenAI 兼容 / 阿里百炼 LLM 和 Edge / CosyVoice TTS，帮助用户对话、查看原话反馈并重练。
+**让每一次开口，都有收获。**
 
-[![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+ChatterPal 是一个可自行部署的英语口语练习应用。围绕熟悉的生活情境完成一段对话，核对录音文字，查看引用原话的反馈，再把值得留下的一句带到重练和延迟复习中。
 
-## 当前功能
+[![CI](https://github.com/likebeans/ChatterPal/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/likebeans/ChatterPal/actions/workflows/tests.yml)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![React](https://img.shields.io/badge/React-18-149ECA?logo=react&logoColor=white)](frontend/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-25634F.svg)](LICENSE)
+[![Status: Alpha](https://img.shields.io/badge/Status-Alpha-B7791F.svg)](#项目状态)
 
-- **任务学习**：人工编写的“描述周末”“点餐”“酒店入住”任务，保存任务版本、文字或录音回合、提示、结束反馈和关联重练。反馈最多选两个重点，引用本次原话。
-- **录音核对**：任务回答、重练和复习可先识别录音，核对或修改文字后再确认提交，也可试听、放弃或重录。机器转写与确认文字分别保留，同一份草稿只识别一次。
-- **记录恢复**：匿名 HttpOnly cookie 身份，SQLite 保存会话、反馈、尝试、操作状态及私有音频；支持刷新、API 重启、JSON 导出和删除个人数据。
-- **复习与进度**：明确保存重点表达后次日到期；只有延迟作答、未使用本轮提示且有新表达依据时，才按约 3 天、7 天排程。提示和看答案由服务端记录。当前每项任务只有两道人工迁移问题，用完后继续练习会标为重复问题，不增加独立迁移记录。
-- **自由聊天**：文字与录音输入、音色选择和音频播放。进程内会话有数量、闲置时间及历史长度限制；需要持久学习记录时使用任务入口。
-- **表达分析**：比较参考文本与机器转写，提供文字建议；可选声学工具提供可用的原始测量。独立 Gradio 主页面的评分、纠错入口已接入现有服务，支持录音与上传音频，纠错参考文本可留空。即时纠正和结束反馈共用文字建议校验，不合格建议明确不可用并保留有效教练回复。每个维度说明来源、证据、状态和适用范围。
+[快速开始](#快速开始) · [部署指南](docs/deployment.md) · [开发指南](docs/development.md) · [参与贡献](CONTRIBUTING.md) · [问题反馈](https://github.com/likebeans/ChatterPal/issues)
 
-当前没有经过人工标注数据校准的发音总分、音素准确率或能力等级。ASR 置信度不代表英语能力，文本匹配率也不代表声学发音准确率；缺失的维度返回 `null` 和原因。任务目标达成、同题重练与延迟新题证据分别记录，不合成“掌握率”。
+![ChatterPal 今日练习桌面界面，包含周末、餐厅点餐和酒店入住三个情境入口](docs/assets/learning-workspace.webp)
 
-2026-10-25，“描述周末”已通过 Qwen3.8-27B、Whisper base 和在线 Edge TTS 的[真实提供商完整验收](docs/int2_live_provider_acceptance_2026-10-25.md)，包含浏览器录音上传、三轮对话、结束反馈、两次关联重练、播放以及刷新/API 重启恢复。2026-10-26 的[录音核对三入口与 Gradio 真实提供商记录](docs/live_transcript_gradio_acceptance_2026-10-26.md)保留了修改确认、原音复用、草稿恢复及服务接线结果；其临时原始证据目前不可读取，本次收尾另以受控提供商复验实际页面，见[最新验收](docs/closeout_acceptance_2026-10-26.md)。这些运行使用合成语音输入，不能证明真人发音效果或生产负载下的延迟。
+*当前 React 界面的实际截图；使用演示环境，未包含个人学习记录。*
+
+## 可以做什么
+
+| 功能 | 练习方式 |
+| --- | --- |
+| 情境对话 | 从「描述周末」「在餐厅点餐」「办理酒店入住」开始，用文字或录音完成多轮对话。 |
+| 录音核对 | 先试听、识别并修改转写，再确认提交；任务回答、单句重练和复习均支持此流程。 |
+| 原话反馈 | 结束对话后查看任务目标依据和最多两个重点，回看原句并继续重练。 |
+| 延迟复习 | 主动保存表达，次日换个问题再用一次；符合独立作答条件时按约 3 天、7 天继续安排。 |
+| 历史与进度 | 保存任务、反馈和尝试，支持刷新与 API 重启后恢复、JSON 导出和删除个人数据。 |
+| 自由练习 | 另有自由对话、音色选择、回放和参考文本分析；保留独立 Gradio 与终端入口。 |
+
+React + FastAPI 是任务学习主入口。界面支持桌面与移动端，Gradio 提供独立的对话与分析功能。
+
+## 界面预览
+
+以下截图来自实际运行的 React + FastAPI 服务，使用全新的演示学习身份和合成语音。录音由本地 Whisper 识别，对话与文字反馈调用实际配置的 LLM，教练语音由 Edge TTS 生成；截图未包含个人学习记录。
+
+<details>
+<summary>情境对话：围绕自己的回答继续聊</summary>
+
+![描述周末任务的实际对话页面，包含核对后的回答、原音回放和教练追问](docs/assets/task-conversation.webp)
+
+*示例回答和教练追问来自本次运行；可回放原音，也可以选择一句继续练习。*
+
+</details>
+
+<details>
+<summary>录音核对：先识别与编辑，再确认提交</summary>
+
+![实际录音核对页面，展示可编辑的转写、试听按钮和确认文字并提交按钮](docs/assets/recording-confirmation.webp)
+
+*语音识别完成后仍处于待确认状态。可以试听、修改识别文字、重录或放弃，再明确提交。*
+
+</details>
+
+<details>
+<summary>练后反馈：引用原话，保留下一次练习的重点</summary>
+
+![实际练后反馈区域，引用任务目标依据，并建议将 I go hiking 改为 I went hiking](docs/assets/practice-feedback.webp)
+
+*本次示例的文字反馈引用原句，给出过去时建议，并提供单句重练与保存到复习的入口；不代表声学发音评分。*
+
+</details>
 
 ## 快速开始
 
-开发环境使用 Python 3.12、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和 Git；React 前端需要 Node.js 20+。完整开发环境包含本地 Whisper、Gradio 和可选音频工具：
+### 1. 准备环境
+
+需要 Git、[uv](https://docs.astral.sh/uv/getting-started/installation/)、Python **3.12** 和 Node.js **20+**。默认安装包含本地 Whisper、Gradio、音频工具及开发依赖。
+
+完整环境还需要原生音频依赖，按系统选择一组命令：
+
+```bash
+# macOS（Homebrew）
+brew install ffmpeg flac portaudio libsndfile
+
+# Ubuntu / Debian
+sudo apt-get update
+sudo apt-get install -y build-essential python3-dev portaudio19-dev ffmpeg flac libsndfile1
+```
+
+Windows 安装、CPU 专用依赖与不包含本地模型的精简安装，见[部署指南](docs/deployment.md#环境与安装)。
+
+### 2. 安装并配置
 
 ```bash
 git clone https://github.com/likebeans/ChatterPal.git
 cd ChatterPal
 uv python install 3.12
 uv sync --locked --python 3.12
+cp .env.example .env
 ```
 
-完整环境的原生依赖：macOS 可用 `brew install ffmpeg portaudio`；Ubuntu/Debian 可用 `sudo apt-get install build-essential portaudio19-dev ffmpeg libsndfile1`。Windows 的 FFmpeg 需加入 PATH；PyAudio 安装问题见[部署指南](docs/deployment.md)。云端精简安装不要求本地 Whisper 或麦克风采集依赖。
+Windows PowerShell 使用 `Copy-Item .env.example .env`。打开 `.env`，为所选服务填写配置。默认组合如下：
 
-复制 `.env.example` 为 `.env` 并编辑。默认组合是本地 Whisper、Edge TTS 和阿里百炼 LLM，需要 `DASHSCOPE_API_KEY`；不需要阿里云 ASR Secret。也可通过 `LLM_PROVIDER=openai`、`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_BASE_URL` 选择兼容服务；`OPENAI_BASE_URL` 是完整的 chat-completions URL。进程环境变量优先于 dotenv，也可以完全不使用 `.env` 文件。`OPENAI_TIMEOUT` 控制兼容服务的 HTTP 超时，默认 30 秒、范围 0–300 秒（不含 0）；响应较慢的服务可显式设为 60，学习操作另受总超时约束。
+| 组件 | 默认实现 | 需要准备什么 |
+| --- | --- | --- |
+| 语音识别（ASR） | 本地 Whisper `base` | 首次使用时下载模型；无需云端 ASR 密钥。 |
+| 对话与文字反馈（LLM） | 阿里百炼 `qwen-plus` | 在 `.env` 中填写 `DASHSCOPE_API_KEY`。 |
+| 语音合成（TTS） | 在线 Edge TTS | 可访问对应网络服务。 |
+
+也支持 Aliyun NLS ASR、OpenAI 兼容聊天接口和 CosyVoice TTS。兼容聊天接口需要设置 `LLM_PROVIDER=openai`、`OPENAI_API_KEY` 和模型名；自定义 `OPENAI_BASE_URL` 必须是完整的 chat-completions URL。完整字段见 [`.env.example`](.env.example) 与[提供商配置](docs/deployment.md#提供商配置)。
+
+进程环境变量优先于 dotenv 文件；可以通过 `--env-file` 选择配置，也可以完全使用环境变量。
+
+### 3. 启动应用
+
+在仓库根目录启动 API：
 
 ```bash
-# 后端：默认 127.0.0.1:8010
-uv run chatterpal-run --mode api
+uv run --frozen chatterpal-run --mode api
 ```
 
-另开终端启动 React：
+另开终端，从仓库根目录启动前端：
 
 ```bash
-cd frontend
-npm ci
-npm run dev
+npm --prefix frontend ci
+npm --prefix frontend run dev
 ```
 
-访问 http://localhost:3010；API 文档在 http://localhost:8010/docs，健康检查在 http://localhost:8010/health。默认只绑定本地回环地址。
-
-独立 Gradio 和终端聊天：
-
-```bash
-uv run chatterpal-run --mode web
-uv run chatterpal-run --mode chat
-```
-
-Gradio 默认地址为 http://localhost:7860。首次使用本地 Whisper 会下载所选模型。
-
-## 可选依赖和安装命令
-
-发布 wheel 内包含可独立使用的命令入口；帮助命令不加载模型或 UI。`chatterpal-setup` 默认检查环境，使用 `chatterpal-setup env` 显式创建配置，并拒绝覆盖现有文件。
-
-```bash
-chatterpal-run --help
-chatterpal-setup --help
-```
-
-运行时依赖按用途分组：
-
-| extra | 用途 |
+| 入口 | 默认地址 |
 | --- | --- |
-| `api` | FastAPI / Uvicorn 与学习接口 |
-| `cloud` | 云端 ASR、LLM、TTS 及其音频准备依赖 |
-| `local-whisper` | 本地 Whisper / Torch |
-| `assessment` | 可选声学分析工具 |
-| `gradio` | 独立 Gradio 界面 |
-| `microphone` | Python 本地麦克风采集 |
-| `full` | 完整运行时 |
-| `dev` | 完整运行时、测试和开发工具 |
+| 英语练习界面 | http://localhost:3010 |
+| API 文档 | http://localhost:8010/docs |
+| API 健康检查 | http://localhost:8010/health |
 
-例如安装构建出的 wheel：
+打开「今日练习」，选择情境后即可开始。开发服务器默认只供本机使用；跨设备录音需要 HTTPS，见[局域网试用指南](docs/trial_environment.md)。
+
+<details>
+<summary>其他入口：Gradio 与终端聊天</summary>
 
 ```bash
-pip install 'dist/chatterpal-0.1.0-py3-none-any.whl[api,cloud]'
-chatterpal-run --mode api
+uv run --frozen chatterpal-run --mode web
+uv run --frozen chatterpal-run --mode chat
 ```
 
-精简安装需要选择云端 ASR 并配置相应凭据；默认 `ASR_PROVIDER=whisper` 需要另装 `local-whisper`。开发者的默认 `uv sync` 安装完整测试环境；精简安装、Docker 构建参数与平台验收范围见[部署指南](docs/deployment.md)。
+Gradio 默认地址为 http://localhost:7860。以上入口包含在完整开发安装中；运行时 extras、wheel 安装与 CLI 命令见[部署指南](docs/deployment.md)。
 
-## 存储和运行边界
+</details>
 
-任务学习默认使用单实例 SQLite；数据库路径由 `LEARNING_DB_PATH` 指定。音频是按 owner 保护的私有 BLOB，临时回放默认 1 小时，用户明确开启原音保留时默认 7 天。关闭保留会清除现有音频字节。导出包含文字和元数据，不包含音频字节。
+## 部署
 
-自由聊天的生成音频使用单独的临时目录，按 TTL、文件数和总字节数回收；正在下载的文件有读取租约。响应依据真实容器返回扩展名与 MIME，明确的裸 PCM 会包装为浏览器可播放的 WAV。TTS 失败保留已生成的文字。
-
-耗时学习写请求由有界 runtime 执行，携带 `request_id` 和版本校验。重复请求可恢复已有操作；删除、超时或租约撤销后，迟到的提供商结果不能重新发布。旧聊天和分析请求同样限制处理名额，调用方断开后，后台工作实际结束才释放文件和名额。
-
-`/health` 的运行快照只输出有界计数和阶段耗时，不包含练习内容、音频或凭据。控制提供商基准由 `scripts/benchmark_runtime.py` 运行；它用于复现工程行为，不能当作真实提供商的生产 P95。
-
-## Docker Compose
-
-配置 `.env` 后，在仓库根目录运行：
+配置 `.env` 后，可通过 Docker Compose 启动 API 与静态 React 前端：
 
 ```bash
 docker compose up --build -d
 docker compose ps
 ```
 
-默认启动后端 API（8010）与静态 React 前端（3010）。生产环境需自行完成 HTTPS、访问控制、持久卷和容量配置。云端精简构建、可选 Gradio 与具体已验证平台见[部署指南](docs/deployment.md#docker-compose-部署)。
+默认暴露前端 **3010**、API **8010**，学习数据库和缓存使用持久卷。部署到公网时需要配置 HTTPS、访问控制与备份。当前学习服务按**单 API 实例 + 本地 SQLite**设计。
 
-在同一局域网内进行两天手机试用，可使用[macOS 试用环境](docs/trial_environment.md)：固定应用版本、Caddy HTTPS、独立 SQLite、用户级进程管理与在线备份。实际启动及浏览器验收见[2026-10-26 试用环境验收](docs/trial_environment_acceptance_2026-10-26.md)。
+- [部署与配置](docs/deployment.md)：Docker、精简依赖、可选 Gradio 和配置排查。
+- [macOS 局域网试用](docs/trial_environment.md)：冻结版本、Caddy HTTPS、进程管理、备份与回退。
 
-## 开发与验证
+当前 GitHub Actions 负责自动检查，应用部署由维护者单独执行。
 
-打包测试使用明确准备的 wheelhouse，测试阶段禁用网络和索引，并为安装创建新缓存。首次或依赖锁变化后先执行以下准备命令（此阶段联网）：
+## 数据与隐私
+
+- **学习身份**：通过当前浏览器的 HttpOnly cookie 访问记录；暂无账号登录或跨设备同步，清除站点数据后暂不支持找回原身份。
+- **文字记录**：任务、反馈、转写和练习尝试保存到 `LEARNING_DB_PATH` 指定的 SQLite，可从学习设置导出或删除。
+- **录音保留**：默认只供 **1 小时**临时回放；明确开启保留后默认为 **7 天**。关闭保留会清除已保存的原音字节；JSON 导出不包含音频字节。
+- **外部服务**：按所选提供商，录音可能发送给云端 ASR，文字发送给 LLM，回复文字发送给 TTS。自行部署时仍需了解提供商的数据政策；本地 Whisper 只负责本地语音识别。
+
+录音预览只调用 ASR；确认提交复用同一份原音与转写。已就绪的转写可在有效期内恢复核对；未发送文字、未上传录音和刷新前尚未确认的编辑不保证跨整页刷新保留。
+
+## 项目状态
+
+ChatterPal 当前为 **Alpha**。已实现三项人工编写任务和六道迁移复习题，适合个人练习、自行部署与工程学习。
+
+反馈展示原话依据、来源与可用状态。当前没有经过标注数据校准的发音总分、音素准确率或能力等级；文字匹配率不等同于声学发音准确率，缺失维度会显示不可用原因。同题重练、使用提示和独立新题作答分别记录，不合成为“掌握率”。
+
+已有自动化回归与受控、真实提供商的浏览器验收记录；真实提供商验收采用合成语音输入，未验证真人学习效果或生产容量。具体版本与检查范围见[最终功能验收](docs/final_acceptance_2026-10-26.md)。
+
+## 开发与质量检查
+
+GitHub Actions 执行 Python 离线回归与覆盖率检查，以及前端测试、构建、lint 和两套 Playwright 浏览器 fixture 回归。后端覆盖率门槛为 **80%**；浏览器检查使用假麦克风和受控 API 响应，失败时保留诊断文件。测试结果以 [Actions](https://github.com/likebeans/ChatterPal/actions) 对应提交的记录为准。
 
 ```bash
-export CHATTERPAL_TEST_WHEELHOUSE="$(mktemp -d)"
-uv export --frozen --no-dev --no-emit-project --quiet --output-file "$CHATTERPAL_TEST_WHEELHOUSE/base.txt"
-uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" --requirement "$CHATTERPAL_TEST_WHEELHOUSE/base.txt"
-uv run --no-project --python 3.12 --with pip python -m pip download --only-binary=:all: --no-cache-dir --dest "$CHATTERPAL_TEST_WHEELHOUSE" hatchling
-uv run python -m pytest
-cd frontend
-npm test
-npm run build
-npm run lint
+# 前端
+npm --prefix frontend test
+npm --prefix frontend run build
+npm --prefix frontend run lint
+
+# 后端：先按开发指南准备打包测试需要的 wheelhouse
+uv run --frozen python -m pytest
 ```
 
-后端默认覆盖率门槛为 80%；本次收尾工作树全量 2057 项通过、零失败或跳过，覆盖率 87.41%，包含即时建议校验及持久化重放、Gradio 主入口 HTTP 上传、双声道时长/基频和聊天会话回归。前端 186 项、build/lint 及 Gradio、React 实际浏览器验收本轮均已复跑通过，详见[收尾与即时纠正校验验收](docs/closeout_acceptance_2026-10-26.md)。这是基于 `main@73ab2d8` 的收尾改动的本地验收结果；主线历史 CI 见[录音核对验收](docs/transcript_confirmation_acceptance_2026-10-26.md)，`main@d98b13b` 的历史结果保留在[剩余优化验收](docs/remaining_optimizations_acceptance_2026-10-26.md)。
+默认后端测试不依赖真实云服务、模型推理或麦克风；依赖安装和 wheelhouse 准备阶段需要联网。浏览器测试与真实提供商验收的前置条件和命令见[开发指南](docs/development.md)及[前端说明](frontend/README.md)。
 
-受控提供商的浏览器驱动包括 `scripts/verify_int2_browser.cjs`、`scripts/verify_learning_review_browser.cjs` 和 `scripts/verify_transcript_confirmation_browser.cjs`。真实提供商录音核对使用 `scripts/verify_transcript_confirmation_live.cjs`，通过 `TRANSCRIPT_ENV_FILE` 指向原私有配置。`scripts/verify_gradio_analysis_browser.cjs` 默认受控，设置 `GRADIO_ENV_FILE` 后使用真实提供商。真实验收需要可用凭据、Whisper 模型、Chrome 和音频工具；配置只在本地子进程读取。真实服务验收与受控基准分别记录。
+```text
+frontend/              React + TypeScript 练习界面
+src/chatterpal/
+  learning/            任务、转写核对、反馈、复习与 SQLite 存储
+  core/                ASR、LLM、TTS 与音频分析适配器
+  services/            对话与表达分析服务
+  web/                 FastAPI 与独立 Gradio 入口
+  cli/                 安装检查、配置和启动命令
+tests/                 Python 回归与集成检查
+scripts/               浏览器验收、基准与试用环境管理
+docs/                  配置、接口契约与版本验收记录
+```
 
-## 文档
+## 文档与参与
 
-- [部署与配置](docs/deployment.md)
-- [学习 API 契约](docs/learning_api_contract.md)
-- [Gradio 收尾与即时纠正校验验收（2026-10-26）](docs/closeout_acceptance_2026-10-26.md)
-- [真实录音核对与 Gradio 入口验收（2026-10-26）](docs/live_transcript_gradio_acceptance_2026-10-26.md)
-- [CI 修复与录音核对验收（2026-10-26）](docs/transcript_confirmation_acceptance_2026-10-26.md)
-- [剩余优化与复习验收（2026-10-26）](docs/remaining_optimizations_acceptance_2026-10-26.md)
-- [SQLite 学习存储契约](docs/learning_store_contract.md)
-- [INT2 离线与浏览器验收](docs/int2_weekend_acceptance.md)
-- [INT2 真实提供商验收](docs/int2_live_provider_acceptance_2026-10-25.md)
-- [开发指南](docs/development.md)
+| 想了解什么 | 入口 |
+| --- | --- |
+| 安装、配置和部署 | [部署指南](docs/deployment.md) |
+| 开发、测试与 CI | [开发指南](docs/development.md) |
+| 学习接口和存储语义 | [学习 API](docs/learning_api_contract.md) · [SQLite 契约](docs/learning_store_contract.md) |
+| 全部文档与历史验收 | [文档索引](docs/README.md) |
+| 报告问题或建议功能 | [GitHub Issues](https://github.com/likebeans/ChatterPal/issues/new/choose) |
+| 使用交流 | [GitHub Discussions](https://github.com/likebeans/ChatterPal/discussions) |
+| 提交改进 | [贡献指南](CONTRIBUTING.md) |
+| 报告安全问题 | [安全政策](SECURITY.md) |
 
-项目仍在持续开发。可运行流程和工程回归不代表经过校准的评分、学习效果验证或生产容量认证。
+欢迎改进文档、修复问题、完善测试和练习内容。提交问题时请提供可复现步骤，并移除凭据和个人学习数据。
 
 ## 许可证与致谢
 
-使用 [MIT License](LICENSE)。感谢 [Liyulingyue](https://github.com/Liyulingyue/) 的思路、[likebeans](https://github.com/likebeans/) 的项目开发，以及 Whisper、阿里云、Microsoft Edge TTS、Gradio 和 React 生态的支持。
+项目采用 [MIT License](LICENSE)。感谢 [Liyulingyue](https://github.com/Liyulingyue/) 的思路、[likebeans](https://github.com/likebeans/) 的项目开发，以及 Whisper、阿里云、Edge TTS、Gradio、FastAPI 和 React 生态。

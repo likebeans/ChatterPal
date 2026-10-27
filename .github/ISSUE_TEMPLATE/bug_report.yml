@@ -1,0 +1,57 @@
+name: 问题反馈
+description: 报告可复现的错误，帮助定位和修复问题。
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请勿上传 API Key、身份令牌或不便公开的录音、转写与日志。
+        安全漏洞请按 [安全政策](https://github.com/likebeans/ChatterPal/blob/main/SECURITY.md) 报告。
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue 和文档，确认没有相同问题。
+          required: true
+        - label: 我已移除敏感信息，附加材料可以公开。
+          required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期与实际表现
+      description: 说明你希望发生什么，以及实际出现的错误或异常。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 提供最小复现步骤；如涉及录音，请说明输入方式和操作顺序。
+      placeholder: |
+        1. 使用……方式启动
+        2. 打开……页面
+        3. 执行……操作
+        4. 出现……问题
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 填写相关版本即可；提供商只需名称，不要填写密钥或私有地址。
+      placeholder: |
+        ChatterPal 版本或 commit：
+        操作系统：
+        Python / Node.js 版本：
+        浏览器及版本：
+        启动方式（CLI / API + React / Gradio）：
+        相关 ASR / LLM / TTS 提供商：
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 日志、截图或补充信息
+      description: 粘贴已脱敏的错误日志，或附上截图；请避免公开真实学习记录。

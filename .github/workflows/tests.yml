@@ -1,4 +1,4 @@
-name: Python tests
+name: CI
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   offline:
@@ -52,7 +56,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
@@ -67,3 +71,49 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npm run lint
+      - name: Install Chromium for browser regressions
+        run: npx --no-install playwright install --with-deps chromium
+      - name: Run offline browser regressions
+        shell: bash
+        env:
+          BROWSER_OUTPUT_DIR: ${{ runner.temp }}/frontend-browser
+        run: |
+          mkdir -p "$BROWSER_OUTPUT_DIR"
+          ./node_modules/.bin/vite --host 127.0.0.1 --port 13204 --strictPort > "$BROWSER_OUTPUT_DIR/vite.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+          node --input-type=module <<'NODE'
+          import { setTimeout as delay } from 'node:timers/promises';
+          const deadline = Date.now() + 30_000;
+          let ready = false;
+          while (Date.now() < deadline) {
+            try {
+              const response = await fetch('http://127.0.0.1:13204/', {
+                signal: AbortSignal.timeout(1000),
+              });
+              const html = await response.text();
+              if (response.ok && html.includes('/@vite/client')) {
+                ready = true;
+                break;
+              }
+            } catch {
+              // Vite may not be listening yet.
+            }
+            await delay(250);
+          }
+          if (!ready) throw new Error('Vite did not become ready within 30 seconds');
+          NODE
+          if ! kill -0 "$server_pid" 2>/dev/null; then
+            printf '%s\n' 'The Vite process exited before browser checks started' >&2
+            exit 1
+          fi
+          BROWSER_OUTPUT_DIR="$BROWSER_OUTPUT_DIR/legacy" npm run test:browser -- http://127.0.0.1:13204 2>&1 | tee "$BROWSER_OUTPUT_DIR/legacy.log"
+          BROWSER_OUTPUT_DIR="$BROWSER_OUTPUT_DIR/learning" npm run test:learning:browser -- http://127.0.0.1:13204 2>&1 | tee "$BROWSER_OUTPUT_DIR/learning.log"
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-browser-diagnostics
+          path: ${{ runner.temp }}/frontend-browser/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,0 +1,13 @@
+# 仅配置 GitHub 自动生成发布说明时的分组，不创建标签或发布版本。
+changelog:
+  categories:
+    - title: 新功能与改进
+      labels: [enhancement]
+    - title: 问题修复
+      labels: [bug]
+    - title: 文档更新
+      labels: [documentation]
+    - title: 依赖更新
+      labels: [dependencies]
+    - title: 其他变更
+      labels: ["*"]

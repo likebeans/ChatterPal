@@ -1,130 +1,44 @@
-# B2 task coaching
+# 任务内容与版本
 
-This worktree is `feat/task-coaching`, based on first-round recovery commit
-`6d67fbc44f5e9c3dd24aa24fe1ff4cf2d7efca3d`. It is not a frozen `LEARNING_BASE`:
-INT2's R0 contracts, provider adapter, operation runtime and routing dependencies
-are not yet present on that baseline.
+本目录保存由人工编写的英语练习情境。`TaskCatalog` 加载 JSON，`TaskDefinition` 校验字段和引用关系；加载内容本身不初始化提供商、模型或数据库。
 
-## Authored content
+## 当前内容
 
-The catalog contains three version-1 tasks, each designed for approximately eight
-minutes. The duration is a product estimate, not a learning-effect claim.
-
-| Task ID | Content | Required information |
+| Task ID | 情境 | 需要表达的信息 |
 | --- | --- | --- |
-| `weekend` | 描述周末 | A past activity, company or being alone, and a feeling or reason |
-| `restaurant-order` | 在餐厅点餐 | A menu item and quantity, drink choice or refusal, and a request or question |
-| `hotel-check-in` | 办理酒店入住 | Check-in intent and a reservation, the fictional booking name and stay length, and a question |
+| `weekend` | 描述周末 | 一项过去的活动、同行者或独自活动、感受或原因。 |
+| `restaurant-order` | 在餐厅点餐 | 餐点与数量、饮品选择或谢绝、一个请求或问题。 |
+| `hotel-check-in` | 办理酒店入住 | 入住意图和已有预订、虚构预订姓名与时长、一个住宿问题。 |
 
-The weekend task adapts the `daily_conversation/intermediate` material at
-`src/chatterpal/services/ai_correction.py` in the baseline commit above. It keeps
-the opening question and hiking example, adds a second complete example, and
-supplies the missing goals, hints and transfer questions. Restaurant and hotel
-content are newly authored. Their menu and booking facts live in the task
-snapshot; they do not create a real order or hotel reservation.
+当前每项内容版本为 `1`，预计练习时间约 8 分钟。时长是产品估计，不代表学习效果。每项任务包含两道迁移问题，共六道；菜单、预订等信息仅用于练习。
 
-Every JSON file includes the roles, objectives, required information, two
-examples, target expressions, stable criteria, one coaching step per criterion,
-optional sentence starters and simpler questions, separate read-aloud and
-free-response prompts, and two authored transfer questions. Other valid wording
-is accepted; free response does not require a target sentence.
+## 内容结构
 
-`TaskCatalog.get_task(task_id, content_version)` selects an exact content version.
-When supplying multiple versions to a custom catalog, the last authored entry
-for an ID is its current version. Duplicate ID/version pairs fail explicitly.
-New content versions must not be substituted into a saved session.
+完整字段见 [`tasks.py`](../tasks.py)。主要分为：
 
-## Pure B2 core
+- 标识与呈现：`task_id`、`content_version`、标题、说明、时长和双方角色。
+- 对话目标：`objectives`、`required_information`、开场、两个完整示例和可用表达。
+- 教练步骤：每个 `criterion_id` 对应一个问题、一个简化问题和一句起始提示。
+- 重练：分别提供 `read_aloud` 和 `free_response`，自由表达允许其他有效措辞。
+- 迁移复习：每道题有稳定的 `question_id`，并引用当前任务的评价条件。
+- 来源：`source_reference` 记录编写依据；周末任务改编自早期聊天场景，餐厅和酒店任务为人工新增。
 
-`tasks.py` and `catalog.py` validate and load immutable authored content without
-initializing old services, providers, models or a database. `TaskSession` in
-`sessions.py` captures that content and the correction preference, appends paired
-user/coach rounds, records hint usage, checks revisions, and creates a fixed
-finish snapshot. It accepts injected UTC-aware times and preserves raw machine
-transcripts. Its JSON round trip is a serialization check, not a claim of
-SQLite persistence or browser refresh recovery.
+条件与问题 ID 在任务内必须唯一。步骤需要一一覆盖条件；迁移问题只能引用当前任务存在的条件。
 
-`coaching.py` builds provider messages from the pinned task and paired history.
-Learner text stays in user messages; hints are recorded as assistance. The
-response parser requires valid structured JSON, preserves a usable reply when
-text advice is unverifiable, and allows at most one immediate suggestion with
-an exact quote from the current text. Delayed-correction mode requests no
-in-conversation corrections. These are prompt and structural checks, not a
-claim that a model cannot put unsolicited advice into its reply text.
+## 版本与会话
 
-Finishing is separate from achieving a communication goal. The core records
-criteria as `unverified` until a downstream grounded evaluator is connected. It
-does not use keywords, turn counts, example similarity, fixed compatibility
-scores or provider confidence as evidence of mastery. It makes no acoustic or
-phoneme assessment.
+`TaskCatalog.get_task(task_id, content_version)` 按明确版本取内容；不传版本时取当前版本。自定义目录包含同一任务的多个版本时，最后提供的版本被选为当前版本；重复的任务 ID / 版本组合会报错。
 
-## Required integration work
+开始练习时，学习服务将所选内容保存为会话快照。反馈、重练和复习继续引用该快照，不将已有会话替换为新内容。更改任务目标或问题语义时应更新 `content_version`，并验证旧会话、评价依据和复习规则的兼容性。
 
-The following work requires INT2's frozen R0 interfaces and A2's atomic repository
-boundary. None is simulated by a successful in-memory example:
+新增内容还需更新 [`catalog.py`](../catalog.py) 的资源列表，并检查任务专属评价上下文；只增加一个 JSON 文件不会自动出现在目录中。任务达成需要来自用户原话的依据，无法验证时应保留不可评估状态，不能用关键词命中或回合数量代替。
 
-- Inject the authenticated owner, repository, provider adapter and bounded
-  operation runtime into `web/routes/learning_tasks.py`; register it in INT2's
-  API entrypoint. Freeze the HTTP task/session representation before mapping
-  these domain values to it.
-- Reserve and deduplicate each write operation, check expected revision, and
-  atomically store the whole new session snapshot together with operation
-  completion. A separate generic record update followed by operation completion
-  does not meet that requirement.
-- Perform provider calls outside transactions. Recognize audio exactly once,
-  pass the exact transcript to coaching and storage, and retain successful text
-  if TTS fails. Clean uploaded copies at the owning boundary.
-- Reject finish when a round operation is pending. Recheck owner existence,
-  session state and revision when an asynchronous round completes so a stale
-  result cannot revive a finished or deleted session.
-- Bind task-condition evidence to real user turns and the fixed source revision;
-  leave unavailable or unvalidated evaluations `unverified`.
-- Verify temporary SQLite persistence, concurrent request deduplication, deletion
-  races, owner isolation, restart recovery and actual HTTP/audio behavior after
-  the dependencies are integrated.
+## 验证
 
-No shared contracts, global fixtures, SQL, old services, API entrypoint,
-configuration, dependencies or frontend files are modified by this worktree.
-
-## Local checks
-
-From this worktree root:
+在仓库根目录运行针对性测试：
 
 ```bash
-uv sync --frozen --python 3.12
-uv run --frozen python -m pytest -o addopts='' tests/learning -q -W error::RuntimeWarning
-uv run --frozen python -m black --check --workers 1 src/chatterpal/learning tests/learning
-uv run --frozen python -m flake8 --max-line-length 88 src/chatterpal/learning tests/learning
-uv build --wheel --out-dir dist/b2
+uv run --frozen python -m pytest -o addopts='' tests/learning/test_tasks_catalog.py tests/learning/test_tasks_coaching.py tests/learning/test_tasks_coaching_degradation.py -q
 ```
 
-The repository's full offline suite retains its default 80% coverage gate. Local
-B2 tests may override global coverage options for focused verification. Packaged
-JSON resources should also be checked from an installed wheel outside the
-editable source tree.
-
-After independent review and fixes, all 88 B2 cases passed with 96.72% focused
-line coverage (295 / 305 statements). The reviewer separately verified 3,066
-mixed round/hint sequences and 27,594 JSON save/restore transitions, rejected
-27 malformed snapshot variants, and confirmed that 20 malformed-advice cases
-retain their usable reply. These checks cover the pure domain layer.
-
-The final full offline run passed 1,361 tests, with zero failures, errors or
-skips, in 268.45 seconds. Full-package line coverage was 6,098 / 7,417 = 82.22%,
-passing the unchanged 80% gate. The run retained 41 existing dependency and UI
-warnings. Both RuntimeWarning and PytestUnhandledThreadExceptionWarning were
-promoted to errors. The exact command from this worktree was:
-
-```bash
-HF_HUB_DISABLE_TELEMETRY=1 HF_HUB_OFFLINE=1 uv run --frozen python -m pytest -q \
-  --cov-report=xml:dist/b2/coverage-final.xml \
-  --junitxml=dist/b2/pytest-results-final.xml \
-  -W error::RuntimeWarning -W error::pytest.PytestUnhandledThreadExceptionWarning
-```
-
-The initial full run passed 1,323 tests with 82.05% coverage, before the final
-regressions were added. It reported 13 blocked Hugging Face telemetry threads;
-the final command disables that telemetry at its source without relaxing the
-network guard or ignoring thread exceptions. Final JUnit and coverage XML are
-under this worktree's ignored `dist/b2/` directory. These results are local
-evidence from 2026-10-24, not acceptance of the pending HTTP/SQLite flow.
+该命令关闭全包覆盖率选项以验证相关行为，不代表满足完整回归的 80% 覆盖率门槛。跨任务流程与复习问题还需按[开发指南](../../../../docs/development.md)运行相应 API 和浏览器检查；完整功能边界见[学习 API 契约](../../../../docs/learning_api_contract.md)。
