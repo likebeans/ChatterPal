@@ -107,7 +107,10 @@ async function capture(page, section) {
       const chat = page.locator('.chat-interface');
       const pronunciation = page.locator('.pronunciation-correction');
       await chat.getByRole('heading', { name: '对话练习', exact: true }).waitFor();
-      assert.equal(await chat.evaluate(element => element.getBoundingClientRect().width), 800, 'Retained tab preserves desktop chat width');
+      const desktopChatWidth = await chat.evaluate(element => element.getBoundingClientRect().width);
+      const availableChatWidth = await chat.evaluate(element => element.parentElement.getBoundingClientRect().width);
+      assert.ok(desktopChatWidth > 0, 'Desktop chat has a visible layout');
+      assert.equal(desktopChatWidth, availableChatWidth, 'Desktop chat fills the available panel width');
       await capture(page, chat);
       await page.getByText('Browser voice reply', { exact: true }).waitFor();
       await keyboardActivate(chat.locator('.audio-play-btn').first());

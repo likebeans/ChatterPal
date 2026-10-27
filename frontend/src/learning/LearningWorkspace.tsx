@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAudioPlayback } from '../hooks/useAudioPlayback'
+import { Icon } from '../components/Icon'
+import type { IconName } from '../components/Icon'
 import { transcriptionBody } from './client'
 import type { LearningApi } from './client'
 import { PracticeInput } from './PracticeInput'
@@ -13,10 +15,23 @@ import type {
 } from './types'
 import './learning.css'
 
-const labels: Array<{ id: LearningView; label: string }> = [
-  { id: 'today', label: '今日任务' }, { id: 'history', label: '学习记录' },
-  { id: 'review', label: '到期复习' }, { id: 'progress', label: '练习进度' }, { id: 'settings', label: '学习设置' },
+const labels: Array<{ id: LearningView; label: string; icon: IconName }> = [
+  { id: 'today', label: '今日任务', icon: 'book' }, { id: 'history', label: '学习记录', icon: 'history' },
+  { id: 'review', label: '到期复习', icon: 'review' }, { id: 'progress', label: '练习进度', icon: 'progress' }, { id: 'settings', label: '学习设置', icon: 'settings' },
 ]
+const viewHeadings: Record<LearningView, { eyebrow: string; title: string; description: string }> = {
+  today: { eyebrow: '一点练习，一点进步', title: '今天，从一段对话开始', description: '选一个熟悉的情境，开口说一说。再把值得留下的一句，练成自己的表达。' },
+  history: { eyebrow: '回看每一次开口', title: '你的练习，都在这里', description: '接着上次的对话继续，或回看原句、反馈和练习尝试。' },
+  review: { eyebrow: '让表达慢慢记得住', title: '给学过的表达，一个新情境', description: '先试着回答，再按需要查看提示。用自己的话，把它再说一次。' },
+  progress: { eyebrow: '每次练习都有迹可循', title: '看看一路留下的进步', description: '从具体的原句和尝试里，发现表达的变化。' },
+  settings: { eyebrow: '按自己的节奏来', title: '让练习更适合你', description: '调整练习偏好，管理当前浏览器中的学习记录。' },
+  session: { eyebrow: '给自己一点开口的时间', title: '把想说的话，慢慢说清楚', description: '不必一次说得完美。先表达，再核对，最后选一句重练。' },
+}
+const taskPresentation: Record<string, { icon: IconName; category: string; tone: string }> = {
+  weekend: { icon: 'weekend', category: '日常交流', tone: 'sage' },
+  'restaurant-order': { icon: 'restaurant', category: '旅行生活', tone: 'sand' },
+  'hotel-check-in': { icon: 'hotel', category: '旅行生活', tone: 'blue' },
+}
 function date(value: string) { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? '时间暂不可用' : parsed.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
 const stateLabel = { met: '已找到完成证据', not_met: '还可以再练', unverified: '尚不能确认' }
 const sourceLabel = { text: '文字依据', acoustic: '声学依据', model: 'AI 建议', self_report: '个人自评' }
@@ -24,7 +39,7 @@ const sourceLabel = { text: '文字依据', acoustic: '声学依据', model: 'AI
 function AudioButton({ audio, id, label, onPlay }: { audio?: LearningAudio | null; id: string; label: string; onPlay: (source: string, id: string) => void }) {
   if (!audio || audio.state !== 'available') return <small className="learning-muted">{audio?.state === 'expired' ? '录音已到期，文字记录仍保留。' : '未保存可回放的音频。'}</small>
   const source = audio.url || (audio.audio_asset_id ? `/api/learning/audio/${encodeURIComponent(audio.audio_asset_id)}` : null)
-  return source ? <button type="button" onClick={() => onPlay(source, id)}>{label}</button> : <small>音频暂不可用。</small>
+  return source ? <button type="button" className="learning-audio-button" onClick={() => onPlay(source, id)}><Icon name="play" size={16} />{label}</button> : <small>音频暂不可用。</small>
 }
 
 function TranscriptHistory({ value }: { value: ConfirmedTranscription }) {
@@ -53,11 +68,14 @@ function TurnCoaching({ coaching }: { coaching?: LearningCoaching }) {
 function ProfileForm({ profile, disabled, onSave, onboarding = false }: { profile: LearningProfile; disabled: boolean; onSave: (profile: LearningProfile) => Promise<void>; onboarding?: boolean }) {
   const [draft, setDraft] = useState(profile)
   const [saving, setSaving] = useState(false)
+  const [expanded, setExpanded] = useState(!onboarding)
   useEffect(() => { setDraft(profile) }, [profile])
   const save = async () => { if (saving) return; setSaving(true); try { await onSave({ ...draft, onboarding_completed: true }) } finally { setSaving(false) } }
-  return <section className="learning-preferences" aria-label={onboarding ? '开始前的学习偏好' : '学习偏好'}>
-    <h3>{onboarding ? '先选一个适合自己的节奏' : '学习偏好'}</h3>
-    {onboarding && <p>可以跳过，直接选一项任务。之后随时调整。</p>}
+  return <section className={`learning-preferences${onboarding ? ' learning-onboarding' : ''}`} aria-label={onboarding ? '开始前的学习偏好' : '学习偏好'}>
+    <div className="learning-preferences-heading"><div><h3>{onboarding ? '先选一个适合自己的节奏' : '学习偏好'}</h3>
+      {onboarding && <p className="learning-muted">可以直接开始，也可以先调整练习偏好。</p>}</div>
+      {onboarding && <div className="learning-actions"><button type="button" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>{expanded ? '收起偏好' : '调整偏好'}</button><button type="button" disabled={disabled || saving} onClick={() => { void onSave({ ...profile, onboarding_completed: true }) }}>跳过引导</button></div>}</div>
+    {expanded && <>
     <div className="learning-fields">
       <label>常用情境<select value={draft.goal} onChange={event => setDraft({ ...draft, goal: event.target.value as LearningProfile['goal'] })}>
         <option value="daily">日常交流</option><option value="travel">旅行出行</option><option value="work">工作交流</option></select></label>
@@ -70,8 +88,8 @@ function ProfileForm({ profile, disabled, onSave, onboarding = false }: { profil
     <p className="learning-muted">默认保留文字学习记录，原音仅供 1 小时临时回放。当前浏览器身份用于找回记录；清除站点数据后暂不支持找回。未发送的文字和录音仅暂存于当前页面；已经识别的录音可在有效期内恢复核对，刷新后未确认的修改会丢失。</p>
     <div className="learning-actions">
       <button type="button" className="learning-primary" disabled={disabled || saving} onClick={() => { void save() }}>{saving ? '正在保存…' : '保存偏好'}</button>
-      {onboarding && <button type="button" disabled={disabled || saving} onClick={() => { void onSave({ ...profile, onboarding_completed: true }) }}>跳过引导</button>}
     </div>
+    </>}
   </section>
 }
 
@@ -173,13 +191,20 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
     void perform('save-review', '/reviews', { session_id: session.session_id, source_revision: session.revision, source_turn_id: sourceTurnId, focus_id: focusId, ...(attemptId ? { attempt_id: attemptId } : {}) })
   }
 
+  const heading = viewHeadings[flow.view]
+
   return <div className="learning-workspace">
-    <div className="learning-heading"><div><p className="learning-eyebrow">每天练会一个表达</p><h2 ref={focusHeading} tabIndex={-1}>把今天说的话，变成下次会用的表达</h2></div>
-      <label className="learning-speed">播放速度<select aria-label="学习音频播放速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.75}>0.75× 慢速</option><option value={1}>1× 正常</option><option value={1.25}>1.25×</option></select></label></div>
-    <nav className="learning-nav" aria-label="学习流程">
-      {labels.map(item => <button type="button" key={item.id} aria-pressed={flow.view === item.id} onClick={() => chooseView(item.id)}>{item.label}{item.id === 'review' && flow.reviews.length > 0 ? `（${flow.reviews.length}）` : ''}</button>)}
-      {session && <button type="button" aria-pressed={flow.view === 'session'} onClick={() => chooseView('session')}>返回本次练习</button>}
-    </nav>
+    <aside className="learning-sidebar">
+      <p className="learning-sidebar-label">我的练习</p>
+      <nav className="learning-nav" aria-label="学习流程">
+        {labels.map(item => <button type="button" key={item.id} aria-pressed={flow.view === item.id} onClick={() => chooseView(item.id)}><Icon name={item.icon} size={19} /><span>{item.label}{item.id === 'review' && flow.reviews.length > 0 ? `（${flow.reviews.length}）` : ''}</span></button>)}
+        {session && <button type="button" className="learning-return" aria-pressed={flow.view === 'session'} onClick={() => chooseView('session')}><Icon name="arrow-left" size={19} /><span>返回本次练习</span></button>}
+      </nav>
+      <div className="learning-sidebar-note"><span className="learning-sidebar-note-icon"><Icon name="mic" size={20} /></span><strong>每次开口，都算练习</strong><p>先把想说的表达出来，再给自己一点变好的空间。</p></div>
+    </aside>
+    <div className="learning-content">
+    <div className="learning-heading"><div><p className="learning-eyebrow">{heading.eyebrow}</p><h2 ref={focusHeading} tabIndex={-1}>{heading.title}</h2><p className="learning-heading-description">{heading.description}</p></div>
+      <label className="learning-speed"><span><Icon name="headphones" size={15} />播放速度</span><select aria-label="学习音频播放速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.75}>0.75× 慢速</option><option value={1}>1× 正常</option><option value={1.25}>1.25×</option></select></label></div>
     {flow.loading && <p role="status">正在加载学习记录…</p>}
     {flow.error && <div className="learning-error" role="alert"><p>{flow.error}</p><button type="button" disabled={flow.loading} onClick={() => { void (flow.pending || flow.recovery === 'refresh' ? flow.retryPending() : flow.connect()) }}>{flow.recovery === 'connect' ? '重新连接学习服务' : flow.recovery === 'refresh' ? '刷新本次记录后继续' : flow.pending ? '查询或重试原操作' : '重新连接学习服务'}</button></div>}
     {flow.notice && <p className="learning-notice" role="status">{flow.notice}</p>}
@@ -193,15 +218,21 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
     {!flow.identity && !flow.loading && !flow.error && <button type="button" onClick={() => { void flow.connect() }}>连接学习服务</button>}
     {flow.identity && <>
       {flow.warnings.length > 0 && <details className="learning-muted"><summary>部分学习内容暂不可用</summary><ul>{flow.warnings.map(item => <li key={item}>{item}</li>)}</ul><button type="button" onClick={() => { void flow.connect() }}>重新加载</button></details>}
-      {flow.view === 'today' && <div className="learning-section">
+      {flow.view === 'today' && <div className="learning-section learning-today">
+        <header className="learning-task-heading"><div><h3>今天想在哪个情境开口？</h3><p className="learning-muted">一段对话，一句值得留下的表达。</p></div><span className="learning-section-caption">按自己的节奏练习</span></header>
+        <div className="learning-task-grid">{flow.tasks.map(task => {
+          const presentation = taskPresentation[task.task_id] || { icon: 'chat' as IconName, category: '情境练习', tone: 'sage' }
+          return <article className={`learning-task learning-task-${presentation.tone}`} key={task.task_id}>
+            <div className="learning-task-top"><span className="learning-task-icon"><Icon name={presentation.icon} size={28} /></span><span className="learning-task-duration"><Icon name="clock" size={14} />约 {task.estimated_minutes} 分钟</span></div>
+            <div className="learning-task-name"><span className="learning-task-category">{presentation.category}</span><h4>{task.title}</h4></div>
+            <ul className="learning-task-objectives">{task.objectives.map(objective => <li key={objective}><Icon name="check" size={14} /><span>{objective}</span></li>)}</ul>
+            <details className="learning-task-details"><summary>查看情境说明</summary><p>{task.description}</p></details>
+            <button type="button" className="learning-primary" disabled={busy} onClick={() => { setPractice(null); void flow.mutate('start', '/sessions', { task_id: task.task_id, content_version: task.content_version, correction_mode: flow.identity!.profile.correction_mode }) }}><span>开始{task.title}</span><Icon name="arrow-right" size={17} /></button>
+          </article>
+        })}</div>
+        {flow.tasks.length === 0 && !flow.loading && <p className="learning-empty">任务还未加载。可以重新连接学习服务，或先使用上方的自由对话。</p>}
+        <div className="learning-how"><p className="learning-eyebrow">一次小练习，三个步骤</p><div><span><i>01</i><strong>先开口</strong><small>在情境里说说自己的想法</small></span><span><i>02</i><strong>看反馈</strong><small>从原句里找到值得调整的地方</small></span><span><i>03</i><strong>再用一次</strong><small>重练一句，留到下次复习</small></span></div></div>
         {!flow.identity.profile.onboarding_completed && <ProfileForm profile={flow.identity.profile} disabled={busy} onSave={flow.saveProfile} onboarding />}
-        <header><h3>今天想在哪个情境开口？</h3><p>完成一段对话，查看有原句依据的反馈，再选一句重练。已保存的文字和尝试可以随时回看。</p></header>
-        <div className="learning-task-grid">{flow.tasks.map(task => <article className="learning-task" key={task.task_id}>
-          <span className="learning-muted">约 {task.estimated_minutes} 分钟</span><h4>{task.title}</h4><p>{task.description}</p>
-          <ul>{task.objectives.map(objective => <li key={objective}>{objective}</li>)}</ul>
-          <button type="button" className="learning-primary" disabled={busy} onClick={() => { setPractice(null); void flow.mutate('start', '/sessions', { task_id: task.task_id, content_version: task.content_version, correction_mode: flow.identity!.profile.correction_mode }) }}>开始{task.title}</button>
-        </article>)}</div>
-        {flow.tasks.length === 0 && !flow.loading && <p>任务还未加载。可以重新连接学习服务，或先使用上方的自由对话。</p>}
       </div>}
       {flow.view === 'history' && <section className="learning-section"><h3>学习记录</h3><p>继续未完成的任务，或回看原句、反馈和重练尝试。</p>
         {flow.history.length === 0 ? <p>还没有可显示的学习记录。完成第一项任务后会出现在这里。</p> : <ul className="learning-history">{flow.history.map(item => <li key={item.session_id}><div><strong>{item.title}</strong><p>{date(item.updated_at)} · {item.status === 'active' ? '练习中' : item.status === 'completed' ? '已结束' : '已归档'}</p></div><button type="button" onClick={() => { void flow.openSession(item.session_id) }}>打开练习记录</button></li>)}</ul>}
@@ -211,7 +242,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
         <header className="learning-session-title"><div><span className="learning-eyebrow">{session.status === 'active' ? '正在练习' : '练习回顾'}</span><h3>{session.task.title}</h3><p>你是{session.task.learner_role}，教练扮演{session.task.coach_role}。</p></div><button type="button" onClick={() => { void flow.openSession(session.session_id) }}>刷新本次记录</button></header>
         <div className="learning-objectives"><strong>这次要说清楚</strong><ul>{session.task.objectives.map(item => <li key={item}>{item}</li>)}</ul></div>
         <details><summary>需要时看看示例表达</summary><ul>{session.task.examples.map(item => <li key={item}>{item}</li>)}</ul></details>
-        <div className="learning-conversation" role="log" aria-label="任务对话" aria-busy={Boolean(flow.pending)}>{session.turns.map(turn => <article key={turn.turn_id} className={`learning-turn learning-turn-${turn.role}`}><span>{turn.role === 'user' ? '我的表达' : '教练'}</span><p lang="en">{turn.text}</p><TranscriptHistory value={turn} />{turn.role === 'user' && <TurnCoaching coaching={session.coaching?.find(item => item.source_turn_id === turn.turn_id)} />}<div className="learning-inline"><AudioButton audio={turn.audio} id={turn.turn_id} label={turn.role === 'user' ? '回放这句原音' : '播放教练回复'} onPlay={play} />{turn.role === 'user' && <button type="button" onClick={() => practiceTurn(turn, session.feedback?.focuses.find(focus => focus.source_turn_id === turn.turn_id) || null)}>练这一句</button>}</div></article>)}</div>
+        <div className="learning-conversation" role="log" aria-label="任务对话" aria-busy={Boolean(flow.pending)}>{session.turns.map(turn => <article key={turn.turn_id} className={`learning-turn learning-turn-${turn.role}`}><span className="learning-turn-label"><Icon name={turn.role === 'user' ? 'mic' : 'chat'} size={15} />{turn.role === 'user' ? '我的表达' : '教练'}</span><p lang="en">{turn.text}</p><TranscriptHistory value={turn} />{turn.role === 'user' && <TurnCoaching coaching={session.coaching?.find(item => item.source_turn_id === turn.turn_id)} />}<div className="learning-inline"><AudioButton audio={turn.audio} id={turn.turn_id} label={turn.role === 'user' ? '回放这句原音' : '播放教练回复'} onPlay={play} />{turn.role === 'user' && <button type="button" onClick={() => practiceTurn(turn, session.feedback?.focuses.find(focus => focus.source_turn_id === turn.turn_id) || null)}>练这一句</button>}</div></article>)}</div>
         {session.status === 'active' && !practice && <>
           <div className="learning-actions"><button type="button" disabled={busy} onClick={() => { void perform('hint', `/sessions/${encodeURIComponent(session.session_id)}/hints`, { expected_revision: session.revision, kind: 'sentence_starter' }) }}>给我一个开头</button><button type="button" disabled={busy || session.turns.every(turn => turn.role !== 'user')} onClick={() => { void perform('finish', `/sessions/${encodeURIComponent(session.session_id)}/finish`, { expected_revision: session.revision }) }}>结束对话，查看反馈</button></div>
           {flow.lastOperation?.session_id === session.session_id && isHint(flow.lastOperation.result) && <p className="learning-notice" role="status">{flow.lastOperation.result.hint}</p>}
@@ -221,7 +252,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
         {session.feedback && <section className="learning-feedback" aria-label="练后重点反馈"><h4>这次练习的重点</h4>
           {session.feedback.strength && <p><strong>做得好的表达：</strong>{session.feedback.strength}</p>}
           <p className="learning-muted">{session.feedback.reason || (session.feedback.status === 'unavailable' ? '本次暂时不能完成评估。' : '反馈基于本次表达，不代表已完成发音评分。')}</p>
-          {session.feedback.criteria.map(item => <div className="learning-criterion" key={item.criterion_id}><strong>{item.description}</strong><span>{stateLabel[item.result]}</span>{item.evidence && <p>依据：{item.evidence}</p>}</div>)}
+          {session.feedback.criteria.map(item => <div className={`learning-criterion learning-criterion-${item.result}`} key={item.criterion_id}><strong>{item.description}</strong><span>{stateLabel[item.result]}</span>{item.evidence && <p>依据：{item.evidence}</p>}</div>)}
           {session.feedback.focuses.slice(0, 2).map(focus => <article className="learning-focus" key={focus.focus_id}><span className="learning-muted">{sourceLabel[focus.source]}</span><p lang="en">{focus.original}</p><p lang="en"><strong>{focus.suggested}</strong></p><p>{focus.explanation}</p><div className="learning-actions"><button type="button" className="learning-primary" onClick={() => { const turn = session.turns.find(item => item.turn_id === focus.source_turn_id); if (turn) practiceTurn(turn, focus) }}>针对这一句重练</button><button type="button" disabled={busy} onClick={() => saveReview(focus.source_turn_id, focus.focus_id)}>保存这个表达到复习</button></div></article>)}
         </section>}
         {practice && <section className="learning-practice" aria-label="单句重练"><header className="learning-inline"><h4>把这一句再说一次</h4><button type="button" onClick={() => { playback.stop(); setPractice(null) }}>返回任务对话</button></header>
@@ -267,6 +298,7 @@ export default function LearningWorkspace({ active, api }: { active: boolean; ap
       </section>}
     </>}
     <audio ref={playback.audioRef} />
+    </div>
   </div>
 }
 

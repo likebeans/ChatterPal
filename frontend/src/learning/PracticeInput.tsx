@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Icon } from '../components/Icon'
 import { useAudioRecording } from '../hooks/useAudioRecording'
 import { useObjectUrls } from '../hooks/useObjectUrls'
 import { sameTranscriptionContext } from './validation'
@@ -90,7 +91,8 @@ export function PracticeInput({ active, disabled, transcribing, context, label, 
   }
   const recordLabel = recording.status === 'requesting' ? '取消录音请求' : recording.status === 'encoding' ? '取消音频处理' : recording.isRecording ? '停止录音' : hasRecording ? '重新录音' : '开始录音'
   const sendLabel = transcription ? '确认文字并提交' : draft.audio ? '识别并核对录音' : submitLabel
-  return <div className="learning-composer" aria-busy={transcribing || discarding}>
+  return <div className={`learning-composer${recording.isRecording ? ' is-recording' : ''}`} aria-busy={transcribing || discarding}>
+    <div className="learning-composer-heading"><span className="learning-input-step"><Icon name="mic" size={17} />轮到你了</span><span className="learning-muted">录音或文字，都可以</span></div>
     <label>
       <span>{label}</span>
       <textarea ref={textField} value={draft.text} onChange={event => onDraftChange({ text: event.target.value })} rows={3}
@@ -99,7 +101,7 @@ export function PracticeInput({ active, disabled, transcribing, context, label, 
     </label>
     {hasRecording && <div className="learning-inline">
       <span>{transcription ? '录音已识别，请核对后再提交。' : '录音已准备好，识别前可以试听。'}</span>
-      <button type="button" onClick={() => { if (previewSource) onPlay(previewSource, 'draft') }} disabled={!active || !previewSource}>试听本次录音</button>
+      <button type="button" onClick={() => { if (previewSource) onPlay(previewSource, 'draft') }} disabled={!active || !previewSource}><Icon name="play" size={16} />试听本次录音</button>
       <button type="button" onClick={() => { void discard() }} disabled={!canManage}>放弃本次录音</button>
     </div>}
     {transcription && <div className="learning-transcription">
@@ -112,8 +114,8 @@ export function PracticeInput({ active, disabled, transcribing, context, label, 
     {unavailable && <p className="learning-error" role="alert">{transcription?.status === 'consumed' ? '这段录音已经提交，请刷新记录核对结果。' : '这段录音已过期，请重新录音或使用文字回答。'}</p>}
     <div className="learning-actions">
       <button type="button" className="learning-record" onClick={record}
-        disabled={!active || discarding || (!recording.isBusy && !canManage)} aria-busy={discarding || recording.status === 'requesting' || recording.status === 'encoding'}>{recordLabel}</button>
-      <button type="button" className="learning-primary" onClick={() => { void send() }} disabled={!active || disabled || discarding || recording.isBusy || (hasRecording ? stale || unavailable || Boolean(transcription && !draft.confirmationText.trim()) : !draft.text.trim())}>{sendLabel}</button>
+        disabled={!active || discarding || (!recording.isBusy && !canManage)} aria-busy={discarding || recording.status === 'requesting' || recording.status === 'encoding'}><Icon name={recording.isBusy ? 'stop' : 'mic'} size={17} />{recordLabel}</button>
+      <button type="button" className="learning-primary" onClick={() => { void send() }} disabled={!active || disabled || discarding || recording.isBusy || (hasRecording ? stale || unavailable || Boolean(transcription && !draft.confirmationText.trim()) : !draft.text.trim())}>{sendLabel}<Icon name={transcription ? 'check' : 'arrow-right'} size={17} /></button>
     </div>
     {transcribing && <p role="status">正在识别录音，完成后请核对文字。可以放弃或重新录音。</p>}
     {discarding && <p role="status">正在撤销录音草稿…</p>}

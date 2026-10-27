@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useAudioRecording } from '../hooks/useAudioRecording'
+import { Icon } from './Icon'
 
 interface AudioRecorderProps {
   onAudioReady: (audioBlob: Blob) => void
@@ -32,7 +33,7 @@ function AudioRecorder({ onAudioReady, onError, onBusyChange, disabled = false, 
           aria-label={label}
           aria-busy={requesting || encoding}
         >
-          <span aria-hidden="true">{isBusy ? '■' : '●'}</span>
+          <Icon name={isBusy ? 'stop' : 'mic'} />
         </button>
       </div>
       {isBusy && (

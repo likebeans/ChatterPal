@@ -6,6 +6,7 @@ import { useLatestRequest } from '../hooks/useLatestRequest'
 import { useObjectUrls } from '../hooks/useObjectUrls'
 import { requestError } from '../api/errors'
 import { isAIResult, isBasicResult } from '../api/pronunciation'
+import { Icon } from './Icon'
 import type { AIResult, AssessmentMetadata, BasicResult, Correction, Scenario, ScenarioContext } from '../api/pronunciation'
 
 function CorrectionList({ items }: { items: Correction[] }) {
@@ -13,7 +14,7 @@ function CorrectionList({ items }: { items: Correction[] }) {
     <div key={index} className="correction-item">
       <div className="correction-type">{({ grammar: '语法', pronunciation: '发音', vocabulary: '词汇', prosody: '韵律' } as Record<string, string>)[correction.type] || '其他'}</div>
       <div className="correction-content">
-        <div className="correction-change"><span className="original">「{correction.original}」</span><span className="arrow">→</span><span className="corrected">「{correction.corrected}」</span></div>
+        <div className="correction-change"><span className="original">「{correction.original}」</span><span className="arrow"><Icon name="arrow-right" size={16} /></span><span className="corrected">「{correction.corrected}」</span></div>
         <p className="correction-explanation">{correction.explanation}</p>
       </div>
     </div>
@@ -180,10 +181,15 @@ function PronunciationCorrection({ active = true }: { active?: boolean }) {
 
   return (
     <div className="pronunciation-correction">
-      <div className="correction-header"><h2>口语纠正</h2><p>录制您的语音，我们将为您提供发音和语法建议</p></div>
+      <div className="correction-header">
+        <p className="section-eyebrow">PRONUNCIATION STUDIO</p>
+        <h2>口语纠正</h2>
+        <p>读一段英文，回听自己的表达，再查看练习建议。</p>
+      </div>
       <div className="reference-text-section">
         <label htmlFor="reference-text">参考文本</label>
-        <textarea id="reference-text" value={referenceText} onChange={event => { invalidateAnalysis(); setReferenceText(event.target.value) }} placeholder="请输入您要练习的英文句子或段落..." className="reference-text-input" rows={3} />
+        <textarea id="reference-text" value={referenceText} onChange={event => { invalidateAnalysis(); setReferenceText(event.target.value) }} placeholder="请输入您要练习的英文句子或段落..." className="reference-text-input" rows={3} aria-describedby="reference-text-hint" />
+        <p id="reference-text-hint" className="field-hint">先写下要朗读的内容，录音时按这段文字练习。</p>
       </div>
       <div className="analysis-mode-section">
         <label>分析模式</label>
@@ -191,6 +197,7 @@ function PronunciationCorrection({ active = true }: { active?: boolean }) {
           <button type="button" className={`mode-button ${analysisMode === 'basic' ? 'active' : ''}`} aria-pressed={analysisMode === 'basic'} onClick={() => changeMode('basic')}>基础分析</button>
           <button type="button" className={`mode-button ${analysisMode === 'ai' ? 'active' : ''}`} aria-pressed={analysisMode === 'ai'} onClick={() => changeMode('ai')}>AI智能分析</button>
         </div>
+        <p className="field-hint">{analysisMode === 'basic' ? '对照识别文字，查看可用的录音测量与练习建议。' : '结合可选场景获取文字建议；AI 建议的可用状态会随结果说明。'}</p>
       </div>
       {analysisMode === 'ai' && (
         <div className="scenario-section">
@@ -212,12 +219,16 @@ function PronunciationCorrection({ active = true }: { active?: boolean }) {
         </div>
       )}
       <div className="recording-section">
+        <div className="recording-heading">
+          <span className="recording-icon"><Icon name="mic" /></span>
+          <div><h3>准备好，就开始朗读</h3><p>在安静的环境录制，完成后可以回听并提交分析。</p></div>
+        </div>
         <div className="recording-controls">
-          <button type="button" onClick={recording.status === 'requesting' || recording.status === 'encoding' ? recording.cancel : recording.isRecording ? recording.stop : recording.start} className={`record-button ${recording.isBusy ? 'stop' : 'start'}`} title={label} aria-label={label} aria-busy={recording.status === 'requesting' || recording.status === 'encoding'} disabled={!active}>{label}</button>
+          <button type="button" onClick={recording.status === 'requesting' || recording.status === 'encoding' ? recording.cancel : recording.isRecording ? recording.stop : recording.start} className={`record-button ${recording.isBusy ? 'stop' : 'start'}`} title={label} aria-label={label} aria-busy={recording.status === 'requesting' || recording.status === 'encoding'} disabled={!active}><Icon name={recording.isBusy ? 'stop' : 'mic'} />{label}</button>
           {audioBlob && !recording.isBusy && <>
-            <button type="button" onClick={() => { if (audioUrl) void play(audioUrl, 'recording') }} className="play-button" aria-pressed={playingId === 'recording'} disabled={!active}>{playingId ? '暂停录音' : '播放录音'}</button>
-            <button type="button" onClick={() => { void analyzeAudio() }} className="analyze-button" disabled={isAnalyzing || !active} aria-busy={isAnalyzing}>{isAnalyzing ? '分析中...' : '分析语音'}</button>
-            <button type="button" onClick={resetRecording} className="reset-button">重新录制</button>
+            <button type="button" onClick={() => { if (audioUrl) void play(audioUrl, 'recording') }} className="play-button" aria-pressed={playingId === 'recording'} disabled={!active}><Icon name={playingId ? 'pause' : 'play'} />{playingId ? '暂停录音' : '播放录音'}</button>
+            <button type="button" onClick={() => { void analyzeAudio() }} className="analyze-button" disabled={isAnalyzing || !active} aria-busy={isAnalyzing}><Icon name="spark" />{isAnalyzing ? '分析中...' : '分析语音'}</button>
+            <button type="button" onClick={resetRecording} className="reset-button"><Icon name="review" size={18} />重新录制</button>
           </>}
         </div>
         {recording.isBusy && <div className="recording-indicator" role="status"><div className="recording-dot" /><span>{recording.status === 'requesting' ? '等待麦克风权限，可取消...' : recording.status === 'encoding' ? '正在处理音频，可取消...' : '正在录音...'}</span></div>}
